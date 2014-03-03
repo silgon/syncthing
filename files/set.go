@@ -1,5 +1,5 @@
 // Package fileset provides a set type to track local/remote files with newness checks.
-package fileset
+package files
 
 type File struct {
 	Key      Key
@@ -72,6 +72,10 @@ func (m *Set) Need(cid uint) []File {
 	}
 
 	return fs
+}
+
+func (m *Set) Availability(key Key) bitset {
+	return m.globalAvailability[key]
 }
 
 func (m *Set) addRemote(cid uint, fs []File) {

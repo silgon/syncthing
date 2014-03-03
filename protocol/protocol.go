@@ -37,9 +37,9 @@ var (
 
 type Model interface {
 	// An index was received from the peer node
-	Index(nodeID string, files []FileInfo)
+	Index(nodeID, repo string, files []FileInfo)
 	// An index update was received from the peer node
-	IndexUpdate(nodeID string, files []FileInfo)
+	IndexUpdate(nodeID, repo string, files []FileInfo)
 	// A request was made by the peer node
 	Request(nodeID, repo string, name string, offset int64, size int) ([]byte, error)
 	// The peer node closed the connection
@@ -279,7 +279,7 @@ loop:
 				c.close(c.xr.Error())
 				break loop
 			} else {
-				c.receiver.Index(c.id, im.Files)
+				c.receiver.Index(c.id, im.Repository, im.Files)
 			}
 			c.Lock()
 			c.hasRecvdIndex = true
@@ -292,7 +292,7 @@ loop:
 				c.close(c.xr.Error())
 				break loop
 			} else {
-				c.receiver.IndexUpdate(c.id, im.Files)
+				c.receiver.IndexUpdate(c.id, im.Repository, im.Files)
 			}
 
 		case messageTypeRequest:

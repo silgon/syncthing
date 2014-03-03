@@ -269,8 +269,8 @@ func (m *Model) NeedFiles() (files []scanner.File, bytes int64) {
 
 // Index is called when a new node is connected and we receive their full index.
 // Implements the protocol.Model interface.
-func (m *Model) Index(nodeID string, fs []protocol.FileInfo) {
-	var files = make([]scanner.File, len(fs))
+func (m *Model) Index(nodeID, repoName string, fs []protocol.FileInfo) {
+	var files = make([]File, len(fs))
 	for i := range fs {
 		files[i] = fileFromFileInfo(fs[i])
 	}
@@ -297,8 +297,8 @@ func (m *Model) Index(nodeID string, fs []protocol.FileInfo) {
 
 // IndexUpdate is called for incremental updates to connected nodes' indexes.
 // Implements the protocol.Model interface.
-func (m *Model) IndexUpdate(nodeID string, fs []protocol.FileInfo) {
-	var files = make([]scanner.File, len(fs))
+func (m *Model) IndexUpdate(nodeID, repoName string, fs []protocol.FileInfo) {
+	var files = make([]File, len(fs))
 	for i := range fs {
 		files[i] = fileFromFileInfo(fs[i])
 	}
