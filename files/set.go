@@ -64,13 +64,19 @@ func (m *Set) SetRemote(cid uint, fs []File) {
 
 func (m *Set) Need(cid uint) []File {
 	var fs []File
-
 	for name, gk := range m.globalKey {
 		if gk.newerThan(m.remoteKey[cid][name]) {
 			fs = append(fs, m.files[gk].File)
 		}
 	}
+	return fs
+}
 
+func (m *Set) Have(cid uint) []File {
+	var fs []File
+	for name, rk := range m.remoteKey[cid] {
+		fs = append(fs, m.files[rk].File)
+	}
 	return fs
 }
 
