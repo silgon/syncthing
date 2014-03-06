@@ -74,14 +74,14 @@ func (m *Set) Need(cid uint) []File {
 
 func (m *Set) Have(cid uint) []File {
 	var fs []File
-	for name, rk := range m.remoteKey[cid] {
+	for _, rk := range m.remoteKey[cid] {
 		fs = append(fs, m.files[rk].File)
 	}
 	return fs
 }
 
-func (m *Set) Availability(key Key) bitset {
-	return m.globalAvailability[key]
+func (m *Set) Availability(name string) bitset {
+	return m.globalAvailability[name]
 }
 
 func (m *Set) addRemote(cid uint, fs []File) {

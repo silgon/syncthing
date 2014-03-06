@@ -1,6 +1,11 @@
 package main
 
-/* This models the cluster contents for a given repository. */
+/* This models the cluster contents.
+
+The model contains a file set for each repository. */
+
+// TODO: Index sending
+// TODO: Stats
 
 import (
 	"errors"
@@ -14,7 +19,7 @@ import (
 )
 
 type model struct {
-	dir string
+	dir map[string]string // directory per repo
 
 	connectMsg      chan connectMsg
 	disconnectMsg   chan disconnectMsg
@@ -28,7 +33,7 @@ type model struct {
 	conns map[string]protocolConnection
 
 	im *cid.Map
-	fs *files.Set
+	fs map[string]*files.Set // one file set per repo name
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -87,13 +92,15 @@ func (m *model) run() {
 
 		case msg := <-m.disconnectMsg:
 			cid := uint(m.im.Get(msg.nodeID))
-			m.fs.SetRemote(cid, nil)
+			for _, repo := range m.fs {
+				repo.SetRemote(cid, nil)
+			}
 
 			m.im.Clear(msg.nodeID)
 			delete(m.conns, msg.nodeID)
 
 		case req := <-m.requestMsg:
-			if m.fs.Availability(req.name)&1 != 1 {
+			if m.fs[req.repo].Availability(req.name)&1 != 1 {
 				req.responseMsg <- responseMsg{data: nil, err: errUnavailable}
 				continue
 			}
@@ -102,23 +109,32 @@ func (m *model) run() {
 		case idx := <-m.initialIndexMsg:
 			cid := uint(m.im.Get(idx.nodeID))
 			// TODO: Make the conversion more efficient
-			m.fs.SetRemote(cid, fsFilesFromFiles(filesFromFileInfos(idx.files)))
+			fsf := fsFilesFromFiles(filesFromFileInfos(idx.files))
+			repo := m.fs[idx.repo]
+			repo.SetRemote(cid, fsf)
 
 		case idx := <-m.updateIndexMsg:
 			cid := uint(m.im.Get(idx.nodeID))
-			m.fs.AddRemote(cid, fsFilesFromFiles(filesFromFileInfos(idx.files)))
+			fsf := fsFilesFromFiles(filesFromFileInfos(idx.files))
+			repo := m.fs[idx.repo]
+			repo.AddRemote(cid, fsf)
 
-		case repo := <-m.initialRepoMsg:
-			m.fs.SetLocal(fsFilesFromFiles(repo.files))
+		case msg := <-m.initialRepoMsg:
+			fsf := fsFilesFromFiles(msg.files)
+			repo := m.fs[msg.repo]
+			repo.SetLocal(fsf)
 
-		case repo := <-m.updateRepoMsg:
-			m.fs.AddLocal(fsFilesFromFiles(repo.files))
+		case msg := <-m.updateRepoMsg:
+			// TODO: Delete records
+			fsf := fsFilesFromFiles(msg.files)
+			repo := m.fs[msg.repo]
+			repo.AddLocal(fsf)
 		}
 	}
 }
 
 func (m *model) handleRequest(req requestMsg) {
-	fn := path.Join(m.dir, req.name)
+	fn := path.Join(m.dir[req.repo], req.name)
 
 	fd, err := os.Open(fn) // TODO: Cache fd
 	if err != nil {
