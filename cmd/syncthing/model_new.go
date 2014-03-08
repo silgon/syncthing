@@ -19,7 +19,10 @@ import (
 )
 
 type model struct {
-	dir map[string]string // directory per repo
+	dir   map[string]string             // repo name -> directory
+	fs    map[string]*files.Set         // repo name -> file set
+	conns map[string]protocolConnection // node ID -> connection
+	im    *cid.Map                      // node ID <-> connection ID
 
 	connectMsg      chan connectMsg
 	disconnectMsg   chan disconnectMsg
@@ -29,11 +32,6 @@ type model struct {
 	updateRepoMsg   chan repoMsg
 	requestMsg      chan requestMsg
 	needMsg         chan needMsg
-
-	conns map[string]protocolConnection
-
-	im *cid.Map
-	fs map[string]*files.Set // one file set per repo name
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -80,6 +78,15 @@ type requestMsg struct {
 type responseMsg struct {
 	data []byte
 	err  error
+}
+
+func newModel() *model {
+	return &model{
+		dir:   make(map[string]string),
+		fs:    make(map[string]*files.Set),
+		conns: make(map[string]protocolConnection),
+		im:    cid.NewMap(),
+	}
 }
 
 func (m *model) run() {
@@ -131,6 +138,10 @@ func (m *model) run() {
 			repo.AddLocal(fsf)
 		}
 	}
+}
+
+func (m *model) AddConnection(conn protocolConnection) {
+	m.connectMsg <- connectMsg{conn: conn}
 }
 
 func (m *model) handleRequest(req requestMsg) {
