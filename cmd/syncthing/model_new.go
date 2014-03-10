@@ -16,6 +16,7 @@ import (
 	"github.com/calmh/syncthing/cid"
 	"github.com/calmh/syncthing/files"
 	"github.com/calmh/syncthing/protocol"
+	"github.com/calmh/syncthing/scanner"
 )
 
 type model struct {
@@ -62,7 +63,7 @@ type indexMsg struct {
 type repoMsg struct {
 	nodeID string
 	repo   string
-	files  []File
+	files  []scanner.File
 }
 
 type needMsg struct{}

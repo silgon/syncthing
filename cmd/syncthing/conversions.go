@@ -3,9 +3,10 @@ package main
 import (
 	"github.com/calmh/syncthing/files"
 	"github.com/calmh/syncthing/protocol"
+	"github.com/calmh/syncthing/scanner"
 )
 
-func fsFilesFromFiles(fs []File) []files.File {
+func fsFilesFromFiles(fs []scanner.File) []files.File {
 	var ffs = make([]files.File, len(fs))
 	for i := range ffs {
 		ffs[i] = fsFileFromFile(fs[i])
@@ -13,7 +14,7 @@ func fsFilesFromFiles(fs []File) []files.File {
 	return ffs
 }
 
-func fsFileFromFile(f File) files.File {
+func fsFileFromFile(f scanner.File) files.File {
 	return files.File{
 		Key: files.Key{
 			Name:    f.Name,
@@ -23,26 +24,26 @@ func fsFileFromFile(f File) files.File {
 	}
 }
 
-func filesFromFileInfos(fs []protocol.FileInfo) []File {
-	var ffs = make([]File, len(fs))
+func filesFromFileInfos(fs []protocol.FileInfo) []scanner.File {
+	var ffs = make([]scanner.File, len(fs))
 	for i := range ffs {
 		ffs[i] = fileFromFileInfo(fs[i])
 	}
 	return ffs
 }
 
-func fileFromFileInfo(f protocol.FileInfo) File {
-	var blocks = make([]Block, len(f.Blocks))
+func fileFromFileInfo(f protocol.FileInfo) scanner.File {
+	var blocks = make([]scanner.Block, len(f.Blocks))
 	var offset int64
 	for i, b := range f.Blocks {
-		blocks[i] = Block{
+		blocks[i] = scanner.Block{
 			Offset: offset,
 			Size:   b.Size,
 			Hash:   b.Hash,
 		}
 		offset += int64(b.Size)
 	}
-	return File{
+	return scanner.File{
 		Name:     f.Name,
 		Size:     offset,
 		Flags:    f.Flags,
@@ -52,7 +53,7 @@ func fileFromFileInfo(f protocol.FileInfo) File {
 	}
 }
 
-func fileInfoFromFile(f File) protocol.FileInfo {
+func fileInfoFromFile(f scanner.File) protocol.FileInfo {
 	var blocks = make([]protocol.BlockInfo, len(f.Blocks))
 	for i, b := range f.Blocks {
 		blocks[i] = protocol.BlockInfo{
