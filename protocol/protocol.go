@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"time"
 
@@ -42,6 +41,8 @@ type Model interface {
 	IndexUpdate(nodeID, repo string, files []FileInfo)
 	// A request was made by the peer node
 	Request(nodeID, repo string, name string, offset int64, size int) ([]byte, error)
+	// An options message was received
+	Options(nodeID string, options map[string]string)
 	// The peer node closed the connection
 	Close(nodeID string, err error)
 }
@@ -49,19 +50,16 @@ type Model interface {
 type Connection struct {
 	sync.RWMutex
 
-	id          string
-	receiver    Model
-	reader      io.Reader
-	xr          *xdr.Reader
-	writer      io.Writer
-	xw          *xdr.Writer
-	closed      bool
-	awaiting    map[int]chan asyncResult
-	nextID      int
-	indexSent   map[string]map[string][2]int64
-	peerOptions map[string]string
-	myOptions   map[string]string
-	optionsLock sync.Mutex
+	id        string
+	receiver  Model
+	reader    io.Reader
+	xr        *xdr.Reader
+	writer    io.Writer
+	xw        *xdr.Writer
+	closed    bool
+	awaiting  map[int]chan asyncResult
+	nextID    int
+	indexSent map[string]map[string][2]int64
 
 	hasSentIndex  bool
 	hasRecvdIndex bool
@@ -79,7 +77,7 @@ const (
 	pingIdleTime = 5 * time.Minute
 )
 
-func NewConnection(nodeID string, reader io.Reader, writer io.Writer, receiver Model, options map[string]string) *Connection {
+func NewConnection(nodeID string, reader io.Reader, writer io.Writer, receiver Model) *Connection {
 	flrd := flate.NewReader(reader)
 	flwr, err := flate.NewWriter(writer, flate.BestSpeed)
 	if err != nil {
@@ -100,29 +98,32 @@ func NewConnection(nodeID string, reader io.Reader, writer io.Writer, receiver M
 	go c.readerLoop()
 	go c.pingerLoop()
 
-	if options != nil {
-		c.myOptions = options
-		go func() {
-			c.Lock()
-			header{0, c.nextID, messageTypeOptions}.encodeXDR(c.xw)
-			var om OptionsMessage
-			for k, v := range options {
-				om.Options = append(om.Options, Option{k, v})
-			}
-			om.encodeXDR(c.xw)
-			err := c.xw.Error()
-			if err == nil {
-				err = c.flush()
-			}
-			if err != nil {
-				log.Println("Warning: Write error during initial handshake:", err)
-			}
-			c.nextID++
-			c.Unlock()
-		}()
+	return &c
+}
+
+func (c *Connection) Options(options map[string]string) {
+	c.Lock()
+
+	header{0, c.nextID, messageTypeOptions}.encodeXDR(c.xw)
+	c.nextID++
+
+	var om OptionsMessage
+	for k, v := range options {
+		om.Options = append(om.Options, Option{k, v})
 	}
 
-	return &c
+	om.encodeXDR(c.xw)
+	err := c.xw.Error()
+	if err == nil {
+		err = c.flush()
+	}
+
+	c.Unlock()
+
+	if err != nil {
+		c.close(err)
+		return
+	}
 }
 
 func (c *Connection) ID() string {
@@ -357,17 +358,11 @@ loop:
 				break loop
 			}
 
-			c.optionsLock.Lock()
-			c.peerOptions = make(map[string]string, len(om.Options))
+			options := make(map[string]string, len(om.Options))
 			for _, opt := range om.Options {
-				c.peerOptions[opt.Key] = opt.Value
+				options[opt.Key] = opt.Value
 			}
-			c.optionsLock.Unlock()
-
-			if mh, rh := c.myOptions["clusterHash"], c.peerOptions["clusterHash"]; len(mh) > 0 && len(rh) > 0 && mh != rh {
-				c.close(ErrClusterHash)
-				break loop
-			}
+			c.receiver.Options(c.id, options)
 
 		default:
 			c.close(fmt.Errorf("protocol error: %s: unknown message type %#x", c.id, hdr.msgType))
@@ -435,10 +430,4 @@ func (c *Connection) Statistics() Statistics {
 	}
 
 	return stats
-}
-
-func (c *Connection) Option(key string) string {
-	c.optionsLock.Lock()
-	defer c.optionsLock.Unlock()
-	return c.peerOptions[key]
 }

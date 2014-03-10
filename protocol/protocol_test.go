@@ -3,6 +3,7 @@ package protocol
 import (
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 	"testing/quick"
 	"time"
@@ -26,8 +27,8 @@ func TestPing(t *testing.T) {
 	ar, aw := io.Pipe()
 	br, bw := io.Pipe()
 
-	c0 := NewConnection("c0", ar, bw, nil, nil)
-	c1 := NewConnection("c1", br, aw, nil, nil)
+	c0 := NewConnection("c0", ar, bw, nil)
+	c1 := NewConnection("c1", br, aw, nil)
 
 	if ok := c0.ping(); !ok {
 		t.Error("c0 ping failed")
@@ -50,8 +51,8 @@ func TestPingErr(t *testing.T) {
 			eaw := &ErrPipe{PipeWriter: *aw, max: i, err: e}
 			ebw := &ErrPipe{PipeWriter: *bw, max: j, err: e}
 
-			c0 := NewConnection("c0", ar, ebw, m0, nil)
-			NewConnection("c1", br, eaw, m1, nil)
+			c0 := NewConnection("c0", ar, ebw, m0)
+			NewConnection("c1", br, eaw, m1)
 
 			res := c0.ping()
 			if (i < 4 || j < 4) && res {
@@ -77,8 +78,8 @@ func TestRequestResponseErr(t *testing.T) {
 			eaw := &ErrPipe{PipeWriter: *aw, max: i, err: e}
 			ebw := &ErrPipe{PipeWriter: *bw, max: j, err: e}
 
-			NewConnection("c0", ar, ebw, m0, nil)
-			c1 := NewConnection("c1", br, eaw, m1, nil)
+			NewConnection("c0", ar, ebw, m0)
+			c1 := NewConnection("c1", br, eaw, m1)
 
 			d, err := c1.Request("default", "tn", 1234, 5678)
 			if err == e || err == ErrClosed {
@@ -119,6 +120,27 @@ func TestRequestResponseErr(t *testing.T) {
 	}
 }
 
+func TestOptions(t *testing.T) {
+	m0 := &TestModel{}
+	m1 := &TestModel{}
+
+	ar, aw := io.Pipe()
+	br, bw := io.Pipe()
+
+	c0 := NewConnection("c0", ar, bw, m0)
+	NewConnection("c1", br, aw, m1)
+
+	o0 := map[string]string{
+		"foo": "bar",
+		"baz": "quux",
+	}
+	c0.Options(o0)
+
+	if !reflect.DeepEqual(o0, m1.options) {
+		t.Errorf("Options incorrect;\n  E: %#v\n  A: %#v", o0, m1.options)
+	}
+}
+
 func TestVersionErr(t *testing.T) {
 	m0 := &TestModel{}
 	m1 := &TestModel{}
@@ -126,8 +148,8 @@ func TestVersionErr(t *testing.T) {
 	ar, aw := io.Pipe()
 	br, bw := io.Pipe()
 
-	c0 := NewConnection("c0", ar, bw, m0, nil)
-	NewConnection("c1", br, aw, m1, nil)
+	c0 := NewConnection("c0", ar, bw, m0)
+	NewConnection("c1", br, aw, m1)
 
 	c0.xw.WriteUint32(encodeHeader(header{
 		version: 2,
@@ -148,8 +170,8 @@ func TestTypeErr(t *testing.T) {
 	ar, aw := io.Pipe()
 	br, bw := io.Pipe()
 
-	c0 := NewConnection("c0", ar, bw, m0, nil)
-	NewConnection("c1", br, aw, m1, nil)
+	c0 := NewConnection("c0", ar, bw, m0)
+	NewConnection("c1", br, aw, m1)
 
 	c0.xw.WriteUint32(encodeHeader(header{
 		version: 0,
@@ -170,8 +192,8 @@ func TestClose(t *testing.T) {
 	ar, aw := io.Pipe()
 	br, bw := io.Pipe()
 
-	c0 := NewConnection("c0", ar, bw, m0, nil)
-	NewConnection("c1", br, aw, m1, nil)
+	c0 := NewConnection("c0", ar, bw, m0)
+	NewConnection("c1", br, aw, m1)
 
 	c0.close(nil)
 

@@ -69,3 +69,12 @@ func fileInfoFromFile(f scanner.File) protocol.FileInfo {
 		Blocks:   blocks,
 	}
 }
+
+func fileInfosFromFiles(fs []scanner.File) []protocol.FileInfo {
+	var fis = make([]protocol.FileInfo, len(fs))
+	for i := range fs {
+		fis[i] = fileInfoFromFile(fs[i])
+	}
+	return fis
+
+}

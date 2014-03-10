@@ -22,6 +22,7 @@ import (
 type model struct {
 	dir   map[string]string             // repo name -> directory
 	fs    map[string]*files.Set         // repo name -> file set
+	cm    map[string]map[string]bool    // repo name -> node ID -> is member
 	conns map[string]protocolConnection // node ID -> connection
 	im    *cid.Map                      // node ID <-> connection ID
 
@@ -33,6 +34,7 @@ type model struct {
 	updateRepoMsg   chan repoMsg
 	requestMsg      chan requestMsg
 	needMsg         chan needMsg
+	optionsMsg      chan optionsMsg
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -81,13 +83,29 @@ type responseMsg struct {
 	err  error
 }
 
+type optionsMsg struct {
+	nodeID  string
+	options map[string]string
+}
+
 func newModel() *model {
-	return &model{
-		dir:   make(map[string]string),
-		fs:    make(map[string]*files.Set),
-		conns: make(map[string]protocolConnection),
-		im:    cid.NewMap(),
+	m := &model{
+		dir:             make(map[string]string),
+		fs:              make(map[string]*files.Set),
+		conns:           make(map[string]protocolConnection),
+		im:              cid.NewMap(),
+		connectMsg:      make(chan connectMsg),
+		disconnectMsg:   make(chan disconnectMsg),
+		initialIndexMsg: make(chan indexMsg),
+		updateIndexMsg:  make(chan indexMsg),
+		initialRepoMsg:  make(chan repoMsg),
+		updateRepoMsg:   make(chan repoMsg),
+		requestMsg:      make(chan requestMsg),
+		needMsg:         make(chan needMsg),
+		optionsMsg:      make(chan optionsMsg),
 	}
+	m.run()
+	return m
 }
 
 func (m *model) run() {
@@ -95,7 +113,12 @@ func (m *model) run() {
 		select {
 		case msg := <-m.connectMsg:
 			m.conns[msg.conn.ID()] = msg.conn
-			// TODO: Send initial index
+			// Send initial index for all repos
+			for repo, fileset := range fs {
+				// TODO: Only for repos where the connection is a member
+				idx := fileInfosFromFiles(fileset.Have(0))
+				msg.conn.Index(repo, idx)
+			}
 			// TODO: Start whatever needed to service the conn
 
 		case msg := <-m.disconnectMsg:
@@ -137,6 +160,9 @@ func (m *model) run() {
 			fsf := fsFilesFromFiles(msg.files)
 			repo := m.fs[msg.repo]
 			repo.AddLocal(fsf)
+
+		case msg := <-m.optionsMsg:
+			_ = msg
 		}
 	}
 }

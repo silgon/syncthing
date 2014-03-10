@@ -9,7 +9,7 @@ type connectionDelegate struct {
 
 func (c connectionDelegate) Index(nodeID, repo string, fs []protocol.FileInfo) {
 	c.model.initialIndexMsg <- indexMsg{
-		repo:   "default",
+		repo:   repo,
 		nodeID: nodeID,
 		files:  fs,
 	}
@@ -17,7 +17,7 @@ func (c connectionDelegate) Index(nodeID, repo string, fs []protocol.FileInfo) {
 
 func (c connectionDelegate) IndexUpdate(nodeID, repo string, fs []protocol.FileInfo) {
 	c.model.updateIndexMsg <- indexMsg{
-		repo:   "default",
+		repo:   repo,
 		nodeID: nodeID,
 		files:  fs,
 	}
@@ -40,4 +40,8 @@ func (c connectionDelegate) Request(nodeID, repo, name string, offset int64, siz
 
 	resp := <-rc
 	return resp.data, resp.err
+}
+
+func (c connectionDelegate) Options(node string, options map[string]string) {
+	c.model.optionsMsg <- optionsMsg{node, options}
 }
