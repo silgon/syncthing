@@ -36,6 +36,7 @@ type model struct {
 	needMsg         chan needMsg
 	optionsMsg      chan optionsMsg
 	repoDirsMsg     chan chan [][2]string
+	addRepoMsg      chan addRepoMsg
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -87,6 +88,12 @@ type optionsMsg struct {
 	options map[string]string
 }
 
+type addRepoMsg struct {
+	repo  string
+	dir   string
+	nodes []string
+}
+
 func newModel() *model {
 	m := &model{
 		dir:             make(map[string]string),
@@ -104,8 +111,9 @@ func newModel() *model {
 		needMsg:         make(chan needMsg),
 		optionsMsg:      make(chan optionsMsg),
 		repoDirsMsg:     make(chan chan [][2]string),
+		addRepoMsg:      make(chan addRepoMsg),
 	}
-	m.run()
+	go m.run()
 	return m
 }
 
@@ -170,7 +178,7 @@ func (m *model) run() {
 
 		case msg := <-m.initialRepoMsg:
 			if debugModel {
-				dlog.Printf("initialRepo")
+				dlog.Printf("initialRepo %q %d", msg.repo, len(msg.files))
 			}
 			fsf := scannerToFilesSlice(msg.files)
 			repo := m.fs[msg.repo]
@@ -178,7 +186,7 @@ func (m *model) run() {
 
 		case msg := <-m.updateRepoMsg:
 			if debugModel {
-				dlog.Printf("updateRepo")
+				dlog.Printf("updateRepo %q %d", msg.repo, len(msg.files))
 			}
 			// TODO: Delete records
 			fsf := scannerToFilesSlice(msg.files)
@@ -200,6 +208,17 @@ func (m *model) run() {
 				repoDirs = append(repoDirs, [2]string{repo, dir})
 			}
 			ch <- repoDirs
+
+		case msg := <-m.addRepoMsg:
+			if debugModel {
+				dlog.Printf("%#v", msg)
+			}
+			m.cm[msg.repo] = make(map[string]bool)
+			for _, node := range msg.nodes {
+				m.cm[msg.repo][node] = true
+			}
+			m.dir[msg.repo] = msg.dir
+			m.fs[msg.repo] = files.NewSet()
 		}
 	}
 }
@@ -209,6 +228,11 @@ func (m *model) AddConnection(conn protocolConnection) {
 }
 
 func (m *model) AddRepository(repo, dir string, nodes []string) {
+	m.addRepoMsg <- addRepoMsg{
+		repo:  repo,
+		dir:   dir,
+		nodes: nodes,
+	}
 }
 
 func (m *model) InitialRepoContents(repo string, files []scanner.File) {

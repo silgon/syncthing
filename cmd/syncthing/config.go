@@ -181,6 +181,9 @@ func readConfigXML(rd io.Reader) (Configuration, error) {
 	}
 
 	fillNilSlices(&cfg.Options)
+	if len(cfg.Repositories) == 1 && cfg.Repositories[0].ID == "" {
+		cfg.Repositories[0].ID = "default"
+	}
 	cfg.Options.ListenAddress = uniqueStrings(cfg.Options.ListenAddress)
 	return cfg, err
 }

@@ -463,7 +463,8 @@ func updateLocalModel(m *model) {
 		if verbose {
 			infoln("Loading cache for repo", repo)
 		}
-		loadIndex(repo, dir, m)
+		cacheIdx := loadIndex(repo, dir)
+		m.InitialRepoContents(repo, protocolToScannerSlice(cacheIdx))
 
 		sup := &suppressor{threshold: int64(cfg.Options.MaxChangeKbps)}
 		w := &scanner.Walker{
@@ -516,26 +517,26 @@ func saveIndex(repo, dir string, files []scanner.File) {
 	os.Rename(fullName+".tmp", fullName)
 }
 
-func loadIndex(repo, dir string, m *model) {
+func loadIndex(repo, dir string) []protocol.FileInfo {
 	name := idxName(repo, dir)
 	idxf, err := os.Open(path.Join(confDir, name))
 	if err != nil {
-		return
+		return nil
 	}
 	defer idxf.Close()
 
 	gzr, err := gzip.NewReader(idxf)
 	if err != nil {
-		return
+		return nil
 	}
 	defer gzr.Close()
 
 	var im protocol.IndexMessage
 	err = im.DecodeXDR(gzr)
 	if err != nil || im.Repository != repo {
-		return
+		return nil
 	}
-	m.InitialRepoContents(repo, protocolToScannerSlice(im.Files))
+	return im.Files
 }
 
 func ensureDir(dir string, mode int) {
