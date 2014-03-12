@@ -35,7 +35,7 @@ type model struct {
 	requestMsg      chan requestMsg
 	needMsg         chan needMsg
 	optionsMsg      chan optionsMsg
-	repoDirsMsg     chan [][2]string
+	repoDirsMsg     chan chan [][2]string
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -46,7 +46,6 @@ type protocolConnection interface {
 	Index(repo string, files []protocol.FileInfo)
 	Request(repo, name string, offset int64, size int) ([]byte, error)
 	Statistics() protocol.Statistics
-	Option(key string) string
 }
 
 type connectMsg struct {
@@ -92,6 +91,7 @@ func newModel() *model {
 	m := &model{
 		dir:             make(map[string]string),
 		fs:              make(map[string]*files.Set),
+		cm:              make(map[string]map[string]bool),
 		conns:           make(map[string]protocolConnection),
 		im:              cid.NewMap(),
 		connectMsg:      make(chan connectMsg),
@@ -103,7 +103,7 @@ func newModel() *model {
 		requestMsg:      make(chan requestMsg),
 		needMsg:         make(chan needMsg),
 		optionsMsg:      make(chan optionsMsg),
-		repoDirsMsg:     make(chan [][2]string),
+		repoDirsMsg:     make(chan chan [][2]string),
 	}
 	m.run()
 	return m
@@ -113,16 +113,24 @@ func (m *model) run() {
 	for {
 		select {
 		case msg := <-m.connectMsg:
-			m.conns[msg.conn.ID()] = msg.conn
+			if debugModel {
+				dlog.Printf("%#v", msg)
+			}
+			nodeID := msg.conn.ID()
+			m.conns[nodeID] = msg.conn
 			// Send initial index for all repos
-			for repo, fileset := range fs {
-				// TODO: Only for repos where the connection is a member
-				idx := fileInfosFromFiles(fileset.Have(0))
-				msg.conn.Index(repo, idx)
+			for repo, fileset := range m.fs {
+				if m.cm[repo][nodeID] {
+					idx := scannerToProtocolSlice(filesToScannerSlice(fileset.Have(0)))
+					msg.conn.Index(repo, idx)
+				}
 			}
 			// TODO: Start whatever needed to service the conn
 
 		case msg := <-m.disconnectMsg:
+			if debugModel {
+				dlog.Printf("%#v", msg)
+			}
 			cid := uint(m.im.Get(msg.nodeID))
 			for _, repo := range m.fs {
 				repo.SetRemote(cid, nil)
@@ -132,6 +140,9 @@ func (m *model) run() {
 			delete(m.conns, msg.nodeID)
 
 		case req := <-m.requestMsg:
+			if debugModel {
+				dlog.Printf("%#v", req)
+			}
 			if m.fs[req.repo].Availability(req.name)&1 != 1 {
 				req.responseMsg <- responseMsg{data: nil, err: errUnavailable}
 				continue
@@ -139,33 +150,51 @@ func (m *model) run() {
 			m.handleRequest(req)
 
 		case idx := <-m.initialIndexMsg:
+			if debugModel {
+				dlog.Printf("initialIndex")
+			}
 			cid := uint(m.im.Get(idx.nodeID))
 			// TODO: Make the conversion more efficient
-			fsf := fsFilesFromFiles(filesFromFileInfos(idx.files))
+			fsf := scannerToFilesSlice(protocolToScannerSlice(idx.files))
 			repo := m.fs[idx.repo]
 			repo.SetRemote(cid, fsf)
 
 		case idx := <-m.updateIndexMsg:
+			if debugModel {
+				dlog.Printf("updateIndex")
+			}
 			cid := uint(m.im.Get(idx.nodeID))
-			fsf := fsFilesFromFiles(filesFromFileInfos(idx.files))
+			fsf := scannerToFilesSlice(protocolToScannerSlice(idx.files))
 			repo := m.fs[idx.repo]
 			repo.AddRemote(cid, fsf)
 
 		case msg := <-m.initialRepoMsg:
-			fsf := fsFilesFromFiles(msg.files)
+			if debugModel {
+				dlog.Printf("initialRepo")
+			}
+			fsf := scannerToFilesSlice(msg.files)
 			repo := m.fs[msg.repo]
 			repo.SetLocal(fsf)
 
 		case msg := <-m.updateRepoMsg:
+			if debugModel {
+				dlog.Printf("updateRepo")
+			}
 			// TODO: Delete records
-			fsf := fsFilesFromFiles(msg.files)
+			fsf := scannerToFilesSlice(msg.files)
 			repo := m.fs[msg.repo]
 			repo.AddLocal(fsf)
 
 		case msg := <-m.optionsMsg:
+			if debugModel {
+				dlog.Printf("%#v", msg)
+			}
 			_ = msg
 
 		case ch := <-m.repoDirsMsg:
+			if debugModel {
+				dlog.Printf("repoDirs")
+			}
 			var repoDirs [][2]string
 			for repo, dir := range m.dir {
 				repoDirs = append(repoDirs, [2]string{repo, dir})
@@ -199,10 +228,17 @@ func (m *model) UpdateRepoContents(repo string, files []scanner.File) {
 func (m *model) LimitSendRate(kbps int) {
 }
 
+func (m *model) StartRW(del bool, par int) {
+}
+
+func (m *model) ConnectedTo(nodeID string) bool {
+	return false // implement conman
+}
+
 // RepoDirs returns a slice of [repo, dir] arrays.
 func (m *model) RepoDirs() [][2]string {
-	c = make(chan [][2]string)
-	c.repoDirsMsg <- c
+	c := make(chan [][2]string)
+	m.repoDirsMsg <- c
 	return <-c
 }
 

@@ -1,20 +1,47 @@
 package main
 
+// Shuffles between the various File types.
+
 import (
 	"github.com/calmh/syncthing/files"
 	"github.com/calmh/syncthing/protocol"
 	"github.com/calmh/syncthing/scanner"
 )
 
-func fsFilesFromFiles(fs []scanner.File) []files.File {
+func scannerToFilesSlice(fs []scanner.File) []files.File {
 	var ffs = make([]files.File, len(fs))
 	for i := range ffs {
-		ffs[i] = fsFileFromFile(fs[i])
+		ffs[i] = scannerToFiles(fs[i])
 	}
 	return ffs
 }
 
-func fsFileFromFile(f scanner.File) files.File {
+func filesToScannerSlice(fs []files.File) []scanner.File {
+	var ffs = make([]scanner.File, len(fs))
+	for i := range ffs {
+		ffs[i] = fs[i].Data.(scanner.File)
+	}
+	return ffs
+}
+
+func protocolToScannerSlice(fs []protocol.FileInfo) []scanner.File {
+	var ffs = make([]scanner.File, len(fs))
+	for i := range ffs {
+		ffs[i] = protocolToScanner(fs[i])
+	}
+	return ffs
+}
+
+func scannerToProtocolSlice(fs []scanner.File) []protocol.FileInfo {
+	var fis = make([]protocol.FileInfo, len(fs))
+	for i := range fs {
+		fis[i] = scannerToProtocol(fs[i])
+	}
+	return fis
+
+}
+
+func scannerToFiles(f scanner.File) files.File {
 	return files.File{
 		Key: files.Key{
 			Name:    f.Name,
@@ -24,15 +51,7 @@ func fsFileFromFile(f scanner.File) files.File {
 	}
 }
 
-func filesFromFileInfos(fs []protocol.FileInfo) []scanner.File {
-	var ffs = make([]scanner.File, len(fs))
-	for i := range ffs {
-		ffs[i] = fileFromFileInfo(fs[i])
-	}
-	return ffs
-}
-
-func fileFromFileInfo(f protocol.FileInfo) scanner.File {
+func protocolToScanner(f protocol.FileInfo) scanner.File {
 	var blocks = make([]scanner.Block, len(f.Blocks))
 	var offset int64
 	for i, b := range f.Blocks {
@@ -53,7 +72,7 @@ func fileFromFileInfo(f protocol.FileInfo) scanner.File {
 	}
 }
 
-func fileInfoFromFile(f scanner.File) protocol.FileInfo {
+func scannerToProtocol(f scanner.File) protocol.FileInfo {
 	var blocks = make([]protocol.BlockInfo, len(f.Blocks))
 	for i, b := range f.Blocks {
 		blocks[i] = protocol.BlockInfo{
@@ -68,13 +87,4 @@ func fileInfoFromFile(f scanner.File) protocol.FileInfo {
 		Version:  f.Version,
 		Blocks:   blocks,
 	}
-}
-
-func fileInfosFromFiles(fs []scanner.File) []protocol.FileInfo {
-	var fis = make([]protocol.FileInfo, len(fs))
-	for i := range fs {
-		fis[i] = fileInfoFromFile(fs[i])
-	}
-	return fis
-
 }

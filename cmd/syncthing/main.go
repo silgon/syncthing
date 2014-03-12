@@ -241,14 +241,12 @@ func main() {
 		//"clusterHash":   clusterHash(cfg.Repositories[0].Nodes),
 	}
 
-	cd := connectionDelegate{model}
-
 	// Routine to listen for incoming connections
 	if verbose {
 		infoln("Listening for incoming connections")
 	}
 	for _, addr := range cfg.Options.ListenAddress {
-		go listen(myID, addr, cd, tlsCfg, connOpts)
+		go listen(myID, addr, m, tlsCfg, connOpts)
 	}
 
 	// Routine to connect out to configured nodes
@@ -256,7 +254,7 @@ func main() {
 		infoln("Attempting to connect to other nodes")
 	}
 	disc := discovery(cfg.Options.ListenAddress[0])
-	go connect(myID, disc, cd, tlsCfg, connOpts)
+	go connect(myID, disc, m, tlsCfg, connOpts)
 
 	// Routine to pull blocks from other nodes to synchronize the local
 	// repository. Does not run when we are in read only (publish only) mode.
@@ -340,14 +338,13 @@ func saveConfig() {
 	saveConfigCh <- struct{}{}
 }
 
-func listen(myID string, addr string, cd *connectionDelegate, tlsCfg *tls.Config, connOpts map[string]string) {
+func listen(myID string, addr string, m *model, tlsCfg *tls.Config, connOpts map[string]string) {
 	if debugNet {
 		dlog.Println("listening on", addr)
 	}
 	l, err := tls.Listen("tcp", addr, tlsCfg)
 	fatalErr(err)
 
-listen:
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -379,7 +376,7 @@ listen:
 			warnf("Connect from connected node (%s)", remoteID)
 		}
 
-		protoConn := protocol.NewConnection(remoteID, conn, conn, cd, connOpts)
+		protoConn := protocol.NewConnection(remoteID, conn, conn, conn, connectionDelegate{m})
 		m.AddConnection(protoConn)
 	}
 }
@@ -410,7 +407,7 @@ func discovery(addr string) *discover.Discoverer {
 	return disc
 }
 
-func connect(myID string, disc *discover.Discoverer, cd *connectionDelegate, tlsCfg *tls.Config, connOpts map[string]string) {
+func connect(myID string, disc *discover.Discoverer, m *model, tlsCfg *tls.Config, connOpts map[string]string) {
 	for {
 	nextNode:
 		for _, nodeCfg := range cfg.Repositories[0].Nodes {
@@ -449,7 +446,7 @@ func connect(myID string, disc *discover.Discoverer, cd *connectionDelegate, tls
 					continue
 				}
 
-				protoConn := protocol.NewConnection(remoteID, conn, conn, cd, connOpts)
+				protoConn := protocol.NewConnection(remoteID, conn, conn, conn, connectionDelegate{m})
 				m.AddConnection(protoConn)
 				continue nextNode
 			}
@@ -461,7 +458,7 @@ func connect(myID string, disc *discover.Discoverer, cd *connectionDelegate, tls
 
 func updateLocalModel(m *model) {
 	for _, rd := range m.RepoDirs() {
-		repo, dir = rd[0], rd[1]
+		repo, dir := rd[0], rd[1]
 
 		if verbose {
 			infoln("Loading cache for repo", repo)
@@ -512,7 +509,7 @@ func saveIndex(repo, dir string, files []scanner.File) {
 
 	protocol.IndexMessage{
 		Repository: repo,
-		Files:      fileInfosFromFiles(files),
+		Files:      scannerToProtocolSlice(files),
 	}.EncodeXDR(gzw)
 	gzw.Close()
 	idxf.Close()
@@ -538,7 +535,7 @@ func loadIndex(repo, dir string, m *model) {
 	if err != nil || im.Repository != repo {
 		return
 	}
-	m.InitialRepoContents(repo, filesFromFileInfos(im.Filesm))
+	m.InitialRepoContents(repo, protocolToScannerSlice(im.Files))
 }
 
 func ensureDir(dir string, mode int) {

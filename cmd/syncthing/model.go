@@ -273,7 +273,7 @@ func (m *Model) NeedFiles() (files []scanner.File, bytes int64) {
 func (m *Model) Index(nodeID, repoName string, fs []protocol.FileInfo) {
 	var files = make([]scanner.File, len(fs))
 	for i := range fs {
-		files[i] = fileFromFileInfo(fs[i])
+		files[i] = protocolToScanner(fs[i])
 	}
 
 	m.imut.Lock()
@@ -301,7 +301,7 @@ func (m *Model) Index(nodeID, repoName string, fs []protocol.FileInfo) {
 func (m *Model) IndexUpdate(nodeID, repoName string, fs []protocol.FileInfo) {
 	var files = make([]scanner.File, len(fs))
 	for i := range fs {
-		files[i] = fileFromFileInfo(fs[i])
+		files[i] = protocolToScanner(fs[i])
 	}
 
 	m.imut.Lock()
@@ -469,7 +469,7 @@ func (m *Model) SeedLocal(fs []protocol.FileInfo) {
 	m.lmut.Lock()
 	m.local = make(map[string]scanner.File)
 	for _, f := range fs {
-		m.local[f.Name] = fileFromFileInfo(f)
+		m.local[f.Name] = protocolToScanner(f)
 	}
 	m.lmut.Unlock()
 
@@ -555,7 +555,7 @@ func (m *Model) ProtocolIndex() []protocol.FileInfo {
 	m.lmut.RLock()
 
 	for _, f := range m.local {
-		mf := fileInfoFromFile(f)
+		mf := scannerToProtocol(f)
 		if debugIdx {
 			var flagComment string
 			if mf.Flags&protocol.FlagDeleted != 0 {
