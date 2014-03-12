@@ -35,6 +35,7 @@ type model struct {
 	requestMsg      chan requestMsg
 	needMsg         chan needMsg
 	optionsMsg      chan optionsMsg
+	repoDirsMsg     chan [][2]string
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -63,9 +64,8 @@ type indexMsg struct {
 }
 
 type repoMsg struct {
-	nodeID string
-	repo   string
-	files  []scanner.File
+	repo  string
+	files []scanner.File
 }
 
 type needMsg struct{}
@@ -103,6 +103,7 @@ func newModel() *model {
 		requestMsg:      make(chan requestMsg),
 		needMsg:         make(chan needMsg),
 		optionsMsg:      make(chan optionsMsg),
+		repoDirsMsg:     make(chan [][2]string),
 	}
 	m.run()
 	return m
@@ -163,6 +164,13 @@ func (m *model) run() {
 
 		case msg := <-m.optionsMsg:
 			_ = msg
+
+		case ch := <-m.repoDirsMsg:
+			var repoDirs [][2]string
+			for repo, dir := range m.dir {
+				repoDirs = append(repoDirs, [2]string{repo, dir})
+			}
+			ch <- repoDirs
 		}
 	}
 }
@@ -174,7 +182,28 @@ func (m *model) AddConnection(conn protocolConnection) {
 func (m *model) AddRepository(repo, dir string, nodes []string) {
 }
 
+func (m *model) InitialRepoContents(repo string, files []scanner.File) {
+	m.initialRepoMsg <- repoMsg{
+		repo:  repo,
+		files: files,
+	}
+}
+
+func (m *model) UpdateRepoContents(repo string, files []scanner.File) {
+	m.updateRepoMsg <- repoMsg{
+		repo:  repo,
+		files: files,
+	}
+}
+
 func (m *model) LimitSendRate(kbps int) {
+}
+
+// RepoDirs returns a slice of [repo, dir] arrays.
+func (m *model) RepoDirs() [][2]string {
+	c = make(chan [][2]string)
+	c.repoDirsMsg <- c
+	return <-c
 }
 
 func (m *model) handleRequest(req requestMsg) {

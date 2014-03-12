@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"crypto/sha1"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -231,24 +232,8 @@ func main() {
 		}
 	}
 
-	// Walk the repository and update the local model before establishing any
-	// connections to other nodes.
-
-	if verbose {
-		infoln("Populating repository index")
-	}
-	loadIndex(m)
-
-	sup := &suppressor{threshold: int64(cfg.Options.MaxChangeKbps)}
-	w := &scanner.Walker{
-		Dir:            m.dir,
-		IgnoreFile:     ".stignore",
-		FollowSymlinks: cfg.Options.FollowSymlinks,
-		BlockSize:      BlockSize,
-		Suppressor:     sup,
-		TempNamer:      defTempNamer,
-	}
-	updateLocalModel(m, w)
+	// Load indexes and rehash local files
+	updateLocalModel(m)
 
 	connOpts := map[string]string{
 		"clientId":      "syncthing",
@@ -287,23 +272,6 @@ func main() {
 		m.StartRW(cfg.Options.AllowDelete, cfg.Options.ParallelRequests)
 	} else if verbose {
 		okln("Ready to synchronize (read only; no external updates accepted)")
-	}
-
-	// Periodically scan the repository and update the local
-	// XXX: Should use some fsnotify mechanism.
-	go func() {
-		td := time.Duration(cfg.Options.RescanIntervalS) * time.Second
-		for {
-			time.Sleep(td)
-			if m.LocalAge() > (td / 2).Seconds() {
-				updateLocalModel(m, w)
-			}
-		}
-	}()
-
-	if verbose {
-		// Periodically print statistics
-		go printStatsLoop(m)
 	}
 
 	select {}
@@ -370,37 +338,6 @@ func saveConfigLoop(cfgFile string) {
 
 func saveConfig() {
 	saveConfigCh <- struct{}{}
-}
-
-func printStatsLoop(m *Model) {
-	var lastUpdated int64
-	var lastStats = make(map[string]ConnectionInfo)
-
-	for {
-		time.Sleep(60 * time.Second)
-
-		for node, stats := range m.ConnectionStats() {
-			secs := time.Since(lastStats[node].At).Seconds()
-			inbps := 8 * int(float64(stats.InBytesTotal-lastStats[node].InBytesTotal)/secs)
-			outbps := 8 * int(float64(stats.OutBytesTotal-lastStats[node].OutBytesTotal)/secs)
-
-			if inbps+outbps > 0 {
-				infof("%s: %sb/s in, %sb/s out", node[0:5], MetricPrefix(int64(inbps)), MetricPrefix(int64(outbps)))
-			}
-
-			lastStats[node] = stats
-		}
-
-		if lu := m.Generation(); lu > lastUpdated {
-			lastUpdated = lu
-			files, _, bytes := m.GlobalSize()
-			infof("%6d files, %9sB in cluster", files, BinaryPrefix(bytes))
-			files, _, bytes = m.LocalSize()
-			infof("%6d files, %9sB in local repo", files, BinaryPrefix(bytes))
-			needFiles, bytes := m.NeedFiles()
-			infof("%6d files, %9sB to synchronize", len(needFiles), BinaryPrefix(bytes))
-		}
-	}
 }
 
 func listen(myID string, addr string, cd *connectionDelegate, tlsCfg *tls.Config, connOpts map[string]string) {
@@ -522,14 +459,49 @@ func connect(myID string, disc *discover.Discoverer, cd *connectionDelegate, tls
 	}
 }
 
-func updateLocalModel(m *Model, w *scanner.Walker) {
-	files, _ := w.Walk()
-	m.ReplaceLocal(files)
-	saveIndex(m)
+func updateLocalModel(m *model) {
+	for _, rd := range m.RepoDirs() {
+		repo, dir = rd[0], rd[1]
+
+		if verbose {
+			infoln("Loading cache for repo", repo)
+		}
+		loadIndex(repo, dir, m)
+
+		sup := &suppressor{threshold: int64(cfg.Options.MaxChangeKbps)}
+		w := &scanner.Walker{
+			Dir:            dir,
+			IgnoreFile:     ".stignore",
+			FollowSymlinks: cfg.Options.FollowSymlinks,
+			BlockSize:      BlockSize,
+			Suppressor:     sup,
+			TempNamer:      defTempNamer,
+		}
+
+		if verbose {
+			infoln("Refreshing repo", repo)
+		}
+		files, _ := w.Walk()
+		m.UpdateRepoContents(repo, files)
+
+		go func() {
+			sl := time.Duration(cfg.Options.RescanIntervalS) * time.Second
+			for {
+				files, _ := w.Walk()
+				m.UpdateRepoContents(repo, files)
+				saveIndex(repo, dir, files) // TODO: only if it changed
+				time.Sleep(sl)
+			}
+		}()
+	}
 }
 
-func saveIndex(m *Model) {
-	name := m.RepoID() + ".idx.gz"
+func idxName(repo, dir string) string {
+	return fmt.Sprintf("%x.idx.gz", sha1.Sum([]byte(repo+"|"+dir)))
+}
+
+func saveIndex(repo, dir string, files []scanner.File) {
+	name := idxName(repo, dir)
 	fullName := path.Join(confDir, name)
 	idxf, err := os.Create(fullName + ".tmp")
 	if err != nil {
@@ -539,16 +511,16 @@ func saveIndex(m *Model) {
 	gzw := gzip.NewWriter(idxf)
 
 	protocol.IndexMessage{
-		Repository: "local",
-		Files:      m.ProtocolIndex(),
+		Repository: repo,
+		Files:      fileInfosFromFiles(files),
 	}.EncodeXDR(gzw)
 	gzw.Close()
 	idxf.Close()
 	os.Rename(fullName+".tmp", fullName)
 }
 
-func loadIndex(m *Model) {
-	name := m.RepoID() + ".idx.gz"
+func loadIndex(repo, dir string, m *model) {
+	name := idxName(repo, dir)
 	idxf, err := os.Open(path.Join(confDir, name))
 	if err != nil {
 		return
@@ -563,10 +535,10 @@ func loadIndex(m *Model) {
 
 	var im protocol.IndexMessage
 	err = im.DecodeXDR(gzr)
-	if err != nil || im.Repository != "local" {
+	if err != nil || im.Repository != repo {
 		return
 	}
-	m.SeedLocal(im.Files)
+	m.InitialRepoContents(repo, filesFromFileInfos(im.Filesm))
 }
 
 func ensureDir(dir string, mode int) {

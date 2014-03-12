@@ -24,7 +24,7 @@ var (
 	guiErrorsMut sync.Mutex
 )
 
-func startGUI(addr string, m *Model) {
+func startGUI(addr string, m *model) {
 	router := martini.NewRouter()
 	router.Get("/", getRoot)
 	router.Get("/rest/version", restGetVersion)
