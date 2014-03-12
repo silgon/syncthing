@@ -1,4 +1,4 @@
-// Package fileset provides a set type to track local/remote files with newness checks.
+// Package files provides a set type to track local/remote files with newness checks.
 package files
 
 type File struct {

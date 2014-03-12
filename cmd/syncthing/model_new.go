@@ -171,6 +171,12 @@ func (m *model) AddConnection(conn protocolConnection) {
 	m.connectMsg <- connectMsg{conn: conn}
 }
 
+func (m *model) AddRepository(repo, dir string, nodes []string) {
+}
+
+func (m *model) LimitSendRate(kbps int) {
+}
+
 func (m *model) handleRequest(req requestMsg) {
 	fn := path.Join(m.dir[req.repo], req.name)
 

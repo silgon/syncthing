@@ -19,6 +19,7 @@ type Configuration struct {
 }
 
 type RepositoryConfiguration struct {
+	ID        string              `xml:"id,attr"`
 	Directory string              `xml:"directory,attr"`
 	Nodes     []NodeConfiguration `xml:"node"`
 }
@@ -180,7 +181,6 @@ func readConfigXML(rd io.Reader) (Configuration, error) {
 	}
 
 	fillNilSlices(&cfg.Options)
-
 	cfg.Options.ListenAddress = uniqueStrings(cfg.Options.ListenAddress)
 	return cfg, err
 }

@@ -149,6 +149,7 @@ func main() {
 		cfg, err = readConfigXML(nil)
 		cfg.Repositories = []RepositoryConfiguration{
 			{
+				ID:        "default",
 				Directory: path.Join(getHomeDir(), "Sync"),
 				Nodes: []NodeConfiguration{
 					{NodeID: myID, Addresses: []string{"dynamic"}},
@@ -160,10 +161,25 @@ func main() {
 		infof("Edit %s to taste or use the GUI\n", cfgFile)
 	}
 
-	// Make sure the local node is in the node list.
-	cfg.Repositories[0].Nodes = cleanNodeList(cfg.Repositories[0].Nodes, myID)
+	var m = newModel()
+	if cfg.Options.MaxSendKbps > 0 {
+		m.LimitSendRate(cfg.Options.MaxSendKbps)
+	}
 
-	var dir = expandTilde(cfg.Repositories[0].Directory)
+	for i, repo := range cfg.Repositories {
+		// Make sure the local node is in the node list.
+		cfg.Repositories[i].Nodes = cleanNodeList(cfg.Repositories[i].Nodes, myID)
+
+		var dir = expandTilde(repo.Directory)
+		ensureDir(dir, -1)
+
+		var nodes []string
+		for _, node := range repo.Nodes {
+			nodes = append(nodes, node.NodeID)
+		}
+
+		m.AddRepository(repo.ID, dir, nodes)
+	}
 
 	if profiler := os.Getenv("STPROFILER"); len(profiler) > 0 {
 		go func() {
@@ -186,12 +202,6 @@ func main() {
 		SessionTicketsDisabled: true,
 		InsecureSkipVerify:     true,
 		MinVersion:             tls.VersionTLS12,
-	}
-
-	ensureDir(dir, -1)
-	m := NewModel(dir, cfg.Options.MaxChangeKbps*1000)
-	if cfg.Options.MaxSendKbps > 0 {
-		m.LimitRate(cfg.Options.MaxSendKbps)
 	}
 
 	// GUI
@@ -243,15 +253,17 @@ func main() {
 	connOpts := map[string]string{
 		"clientId":      "syncthing",
 		"clientVersion": Version,
-		"clusterHash":   clusterHash(cfg.Repositories[0].Nodes),
+		//"clusterHash":   clusterHash(cfg.Repositories[0].Nodes),
 	}
+
+	cd := connectionDelegate{model}
 
 	// Routine to listen for incoming connections
 	if verbose {
 		infoln("Listening for incoming connections")
 	}
 	for _, addr := range cfg.Options.ListenAddress {
-		go listen(myID, addr, m, tlsCfg, connOpts)
+		go listen(myID, addr, cd, tlsCfg, connOpts)
 	}
 
 	// Routine to connect out to configured nodes
@@ -259,7 +271,7 @@ func main() {
 		infoln("Attempting to connect to other nodes")
 	}
 	disc := discovery(cfg.Options.ListenAddress[0])
-	go connect(myID, disc, m, tlsCfg, connOpts)
+	go connect(myID, disc, cd, tlsCfg, connOpts)
 
 	// Routine to pull blocks from other nodes to synchronize the local
 	// repository. Does not run when we are in read only (publish only) mode.
@@ -391,7 +403,7 @@ func printStatsLoop(m *Model) {
 	}
 }
 
-func listen(myID string, addr string, m *Model, tlsCfg *tls.Config, connOpts map[string]string) {
+func listen(myID string, addr string, cd *connectionDelegate, tlsCfg *tls.Config, connOpts map[string]string) {
 	if debugNet {
 		dlog.Println("listening on", addr)
 	}
@@ -430,14 +442,8 @@ listen:
 			warnf("Connect from connected node (%s)", remoteID)
 		}
 
-		for _, nodeCfg := range cfg.Repositories[0].Nodes {
-			if nodeCfg.NodeID == remoteID {
-				protoConn := protocol.NewConnection(remoteID, conn, conn, m, connOpts)
-				m.AddConnection(conn, protoConn)
-				continue listen
-			}
-		}
-		conn.Close()
+		protoConn := protocol.NewConnection(remoteID, conn, conn, cd, connOpts)
+		m.AddConnection(protoConn)
 	}
 }
 
@@ -467,7 +473,7 @@ func discovery(addr string) *discover.Discoverer {
 	return disc
 }
 
-func connect(myID string, disc *discover.Discoverer, m *Model, tlsCfg *tls.Config, connOpts map[string]string) {
+func connect(myID string, disc *discover.Discoverer, cd *connectionDelegate, tlsCfg *tls.Config, connOpts map[string]string) {
 	for {
 	nextNode:
 		for _, nodeCfg := range cfg.Repositories[0].Nodes {
@@ -506,8 +512,8 @@ func connect(myID string, disc *discover.Discoverer, m *Model, tlsCfg *tls.Confi
 					continue
 				}
 
-				protoConn := protocol.NewConnection(remoteID, conn, conn, m, connOpts)
-				m.AddConnection(conn, protoConn)
+				protoConn := protocol.NewConnection(remoteID, conn, conn, cd, connOpts)
+				m.AddConnection(protoConn)
 				continue nextNode
 			}
 		}

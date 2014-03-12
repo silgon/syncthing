@@ -51,6 +51,7 @@ type Connection struct {
 	sync.RWMutex
 
 	id        string
+	raw       io.Closer
 	receiver  Model
 	reader    io.Reader
 	xr        *xdr.Reader
@@ -77,7 +78,7 @@ const (
 	pingIdleTime = 5 * time.Minute
 )
 
-func NewConnection(nodeID string, reader io.Reader, writer io.Writer, receiver Model) *Connection {
+func NewConnection(nodeID string, raw io.Closer, reader io.Reader, writer io.Writer, receiver Model) *Connection {
 	flrd := flate.NewReader(reader)
 	flwr, err := flate.NewWriter(writer, flate.BestSpeed)
 	if err != nil {
@@ -86,6 +87,7 @@ func NewConnection(nodeID string, reader io.Reader, writer io.Writer, receiver M
 
 	c := Connection{
 		id:        nodeID,
+		raw:       raw,
 		receiver:  receiver,
 		reader:    flrd,
 		xr:        xdr.NewReader(flrd),
@@ -238,15 +240,19 @@ func (c *Connection) flush() error {
 
 func (c *Connection) close(err error) {
 	c.Lock()
-	if c.closed {
+	if c.raw == nil {
 		c.Unlock()
 		return
 	}
-	c.closed = true
+
 	for _, ch := range c.awaiting {
 		close(ch)
 	}
 	c.awaiting = nil
+
+	c.raw.Close()
+	c.raw = nil
+
 	c.Unlock()
 
 	c.receiver.Close(c.id, err)
