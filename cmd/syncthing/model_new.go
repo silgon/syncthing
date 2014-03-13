@@ -26,17 +26,18 @@ type model struct {
 	conns map[string]protocolConnection // node ID -> connection
 	im    *cid.Map                      // node ID <-> connection ID
 
-	connectMsg      chan connectMsg
-	disconnectMsg   chan disconnectMsg
-	initialIndexMsg chan indexMsg
-	updateIndexMsg  chan indexMsg
-	initialRepoMsg  chan repoMsg
-	updateRepoMsg   chan repoMsg
-	requestMsg      chan requestMsg
-	needMsg         chan needMsg
-	optionsMsg      chan optionsMsg
-	repoDirsMsg     chan chan [][2]string
-	addRepoMsg      chan addRepoMsg
+	connectMsg       chan connectMsg
+	disconnectMsg    chan disconnectMsg
+	initialIndexMsg  chan indexMsg
+	updateIndexMsg   chan indexMsg
+	initialRepoMsg   chan repoMsg
+	updateRepoMsg    chan repoMsg
+	requestMsg       chan requestMsg
+	needMsg          chan needMsg
+	optionsMsg       chan optionsMsg
+	repoDirsMsg      chan chan [][2]string
+	addRepoMsg       chan addRepoMsg
+	getConnectionMsg chan getConnectionMsg
 }
 
 var errUnavailable = errors.New("file unavailable")
@@ -94,24 +95,30 @@ type addRepoMsg struct {
 	nodes []string
 }
 
+type getConnectionMsg struct {
+	nodeID string
+	ch     chan protocolConnection
+}
+
 func newModel() *model {
 	m := &model{
-		dir:             make(map[string]string),
-		fs:              make(map[string]*files.Set),
-		cm:              make(map[string]map[string]bool),
-		conns:           make(map[string]protocolConnection),
-		im:              cid.NewMap(),
-		connectMsg:      make(chan connectMsg),
-		disconnectMsg:   make(chan disconnectMsg),
-		initialIndexMsg: make(chan indexMsg),
-		updateIndexMsg:  make(chan indexMsg),
-		initialRepoMsg:  make(chan repoMsg),
-		updateRepoMsg:   make(chan repoMsg),
-		requestMsg:      make(chan requestMsg),
-		needMsg:         make(chan needMsg),
-		optionsMsg:      make(chan optionsMsg),
-		repoDirsMsg:     make(chan chan [][2]string),
-		addRepoMsg:      make(chan addRepoMsg),
+		dir:              make(map[string]string),
+		fs:               make(map[string]*files.Set),
+		cm:               make(map[string]map[string]bool),
+		conns:            make(map[string]protocolConnection),
+		im:               cid.NewMap(),
+		connectMsg:       make(chan connectMsg),
+		disconnectMsg:    make(chan disconnectMsg),
+		initialIndexMsg:  make(chan indexMsg),
+		updateIndexMsg:   make(chan indexMsg),
+		initialRepoMsg:   make(chan repoMsg),
+		updateRepoMsg:    make(chan repoMsg),
+		requestMsg:       make(chan requestMsg),
+		needMsg:          make(chan needMsg),
+		optionsMsg:       make(chan optionsMsg),
+		repoDirsMsg:      make(chan chan [][2]string),
+		addRepoMsg:       make(chan addRepoMsg),
+		getConnectionMsg: make(chan getConnectionMsg),
 	}
 	go m.run()
 	return m
@@ -134,6 +141,9 @@ func (m *model) run() {
 				}
 			}
 			// TODO: Start whatever needed to service the conn
+
+		case msg := <-m.getConnectionMsg:
+			msg.ch <- m.conns[msg.nodeID]
 
 		case msg := <-m.disconnectMsg:
 			if debugModel {
@@ -227,6 +237,15 @@ func (m *model) AddConnection(conn protocolConnection) {
 	m.connectMsg <- connectMsg{conn: conn}
 }
 
+func (m *model) GetConnection(nodeID string) protocolConnection {
+	ch := make(chan protocolConnection)
+	m.getConnectionMsg <- getConnectionMsg{
+		nodeID: nodeID,
+		ch:     ch,
+	}
+	return <-ch
+}
+
 func (m *model) AddRepository(repo, dir string, nodes []string) {
 	m.addRepoMsg <- addRepoMsg{
 		repo:  repo,
@@ -253,10 +272,6 @@ func (m *model) LimitSendRate(kbps int) {
 }
 
 func (m *model) StartRW(del bool, par int) {
-}
-
-func (m *model) ConnectedTo(nodeID string) bool {
-	return false // implement conman
 }
 
 // RepoDirs returns a slice of [repo, dir] arrays.

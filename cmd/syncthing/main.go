@@ -372,7 +372,7 @@ func listen(myID string, addr string, m *model, tlsCfg *tls.Config, connOpts map
 			continue
 		}
 
-		if m.ConnectedTo(remoteID) {
+		if m.GetConnection(remoteID) != nil {
 			warnf("Connect from connected node (%s)", remoteID)
 		}
 
@@ -407,49 +407,82 @@ func discovery(addr string) *discover.Discoverer {
 	return disc
 }
 
+// allNodeAddrs returns a flattened list of (node, addr) pairs
+func allNodeAddrs() [][2]string {
+	var addrs [][2]string
+	for _, repo := range cfg.Repositories {
+		for _, cfg := range repo.Nodes {
+			for _, addr := range cfg.Addresses {
+				addrs = append(addrs, [2]string{cfg.NodeID, addr})
+			}
+		}
+	}
+	return addrs
+}
+
 func connect(myID string, disc *discover.Discoverer, m *model, tlsCfg *tls.Config, connOpts map[string]string) {
 	for {
-	nextNode:
-		for _, nodeCfg := range cfg.Repositories[0].Nodes {
-			if nodeCfg.NodeID == myID {
+		var connAddrs [][2]string
+
+		// Filter out addresses for nodes we are not connected to, and attempt
+		// to resolve the dynamic addresses.
+
+		for _, addrSpec := range allNodeAddrs() {
+			node, addr := addrSpec[0], addrSpec[1]
+
+			if node == myID {
 				continue
 			}
-			if m.ConnectedTo(nodeCfg.NodeID) {
+
+			if m.GetConnection(node) != nil {
 				continue
 			}
-			for _, addr := range nodeCfg.Addresses {
-				if addr == "dynamic" {
-					if disc != nil {
-						t := disc.Lookup(nodeCfg.NodeID)
-						if len(t) == 0 {
-							continue
+
+			if addr == "dynamic" {
+				if disc != nil {
+					for _, discAddr := range disc.Lookup(node) {
+						connAddrs = append(connAddrs, [2]string{node, discAddr})
+						if debugNet {
+							dlog.Println("discovered", discAddr, "for", node)
 						}
-						addr = t[0] //XXX: Handle all of them
 					}
 				}
-
-				if debugNet {
-					dlog.Println("dial", nodeCfg.NodeID, addr)
-				}
-				conn, err := tls.Dial("tcp", addr, tlsCfg)
-				if err != nil {
-					if debugNet {
-						dlog.Println(err)
-					}
-					continue
-				}
-
-				remoteID := certID(conn.ConnectionState().PeerCertificates[0].Raw)
-				if remoteID != nodeCfg.NodeID {
-					warnln("Unexpected nodeID", remoteID, "!=", nodeCfg.NodeID)
-					conn.Close()
-					continue
-				}
-
-				protoConn := protocol.NewConnection(remoteID, conn, conn, conn, connectionDelegate{m})
-				m.AddConnection(protoConn)
-				continue nextNode
+			} else {
+				connAddrs = append(connAddrs, addrSpec)
 			}
+		}
+
+		// Attempt to connect to the addresses remaining after filtering and
+		// resolving.
+
+		for _, addrSpec := range connAddrs {
+			node, addr := addrSpec[0], addrSpec[1]
+
+			if m.GetConnection(node) != nil {
+				continue
+			}
+
+			if debugNet {
+				dlog.Println("dial", node, addr)
+			}
+
+			conn, err := tls.Dial("tcp", addr, tlsCfg)
+			if err != nil {
+				if debugNet {
+					dlog.Println(err)
+				}
+				continue
+			}
+
+			remoteID := certID(conn.ConnectionState().PeerCertificates[0].Raw)
+			if remoteID != node {
+				warnln("Unexpected nodeID", remoteID, "!=", node)
+				conn.Close()
+				continue
+			}
+
+			protoConn := protocol.NewConnection(remoteID, conn, conn, conn, connectionDelegate{m})
+			m.AddConnection(protoConn)
 		}
 
 		time.Sleep(time.Duration(cfg.Options.ReconnectIntervalS) * time.Second)
