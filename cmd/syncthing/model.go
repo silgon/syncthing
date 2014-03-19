@@ -19,9 +19,10 @@ import (
 )
 
 type Model struct {
-	dir string
-	cm  *cid.Map
-	fs  files.Set
+	dir  string
+	cm   *cid.Map
+	fs   files.Set
+	fmut sync.Mutex
 
 	global    map[string]scanner.File // the latest version of each file as it exists in the cluster
 	gmut      sync.RWMutex            // protects global
@@ -162,12 +163,12 @@ func (m *Model) ConnectionStats() map[string]ConnectionInfo {
 		RemoteAddr() net.Addr
 	}
 
-	m.gmut.RLock()
+	m.fmut.Lock()
 	m.pmut.RLock()
 	m.rmut.RLock()
 
 	var tot int64
-	for _, f := range m.global {
+	for _, f := range m.fs.Global() {
 		if f.Flags&protocol.FlagDeleted == 0 {
 			tot += f.Size
 		}
@@ -184,10 +185,10 @@ func (m *Model) ConnectionStats() map[string]ConnectionInfo {
 			ci.Address = nc.RemoteAddr().String()
 		}
 
-		var have int64
-		for _, f := range m.remote[node] {
-			if f.Equals(m.global[f.Name]) && f.Flags&protocol.FlagDeleted == 0 {
-				have += f.Size
+		var have = tot
+		for _, f := range m.fs.Need(m.cm.Get(node)) {
+			if f.Flags&protocol.FlagDeleted == 0 {
+				have -= f.Size
 			}
 		}
 
@@ -201,80 +202,66 @@ func (m *Model) ConnectionStats() map[string]ConnectionInfo {
 
 	m.rmut.RUnlock()
 	m.pmut.RUnlock()
-	m.gmut.RUnlock()
+	m.fmut.Unlock()
+
 	return res
+}
+
+func sizeOf(fs []File) (files, deleted int, bytes int64) {
+	for _, f := range fs {
+		if f.Flags&protocol.FlagDeleted == 0 {
+			files++
+			bytes += f.Size
+		} else {
+			deleted++
+		}
+	}
 }
 
 // GlobalSize returns the number of files, deleted files and total bytes for all
 // files in the global model.
 func (m *Model) GlobalSize() (files, deleted int, bytes int64) {
-	m.gmut.RLock()
-
-	for _, f := range m.global {
-		if f.Flags&protocol.FlagDeleted == 0 {
-			files++
-			bytes += f.Size
-		} else {
-			deleted++
-		}
-	}
-
-	m.gmut.RUnlock()
-	return
+	m.fmut.RLock()
+	fs := m.fs.Global()
+	m.fmut.Unlock()
+	return sizeOf(fs)
 }
 
 // LocalSize returns the number of files, deleted files and total bytes for all
 // files in the local repository.
 func (m *Model) LocalSize() (files, deleted int, bytes int64) {
-	m.lmut.RLock()
-
-	for _, f := range m.local {
-		if f.Flags&protocol.FlagDeleted == 0 {
-			files++
-			bytes += f.Size
-		} else {
-			deleted++
-		}
-	}
-
-	m.lmut.RUnlock()
-	return
+	m.fmut.RLock()
+	fs := m.fs.Have(0)
+	m.fmut.Unlock()
+	return sizeOf(fs)
 }
 
 // InSyncSize returns the number and total byte size of the local files that
 // are in sync with the global model.
 func (m *Model) InSyncSize() (files, bytes int64) {
-	m.gmut.RLock()
-	m.lmut.RLock()
+	m.fmut.RLock()
+	gf := m.fs.Global()
+	hf := m.fs.Need(0)
+	m.fmut.Unlock()
 
-	for n, f := range m.local {
-		if gf, ok := m.global[n]; ok && f.Equals(gf) {
-			if f.Flags&protocol.FlagDeleted == 0 {
-				files++
-				bytes += f.Size
-			}
-		}
-	}
+	gn, _, gb := sizeOf(gf)
+	hn, _, hb := sizeOf(hf)
 
-	m.lmut.RUnlock()
-	m.gmut.RUnlock()
-	return
+	return gn - hn, gb - hb
 }
 
 // NeedFiles returns the list of currently needed files and the total size.
-func (m *Model) NeedFiles() (files []scanner.File, bytes int64) {
-	qf := m.fq.QueuedFiles()
+func (m *Model) NeedFiles() ([]scanner.File, int64) {
+	m.fmut.Lock()
+	nf := m.fs.Need(0)
+	m.fmut.Unlock()
 
-	m.gmut.RLock()
-
-	for _, n := range qf {
-		f := m.global[n]
-		files = append(files, f)
+	var bytes int64
+	for _, n := range nf {
 		bytes += f.Size
 	}
 
-	m.gmut.RUnlock()
-	return
+	return nf, bytes
 }
 
 // Index is called when a new node is connected and we receive their full index.
@@ -285,24 +272,14 @@ func (m *Model) Index(nodeID string, fs []protocol.FileInfo) {
 		files[i] = fileFromFileInfo(fs[i])
 	}
 
-	m.imut.Lock()
-	defer m.imut.Unlock()
+	m.fmut.Lock()
+	cid := m.cm.Get(nodeID)
+	m.fs.SetRemote(cid, files)
+	m.fmut.Unlock()
 
 	if debugNet {
 		dlog.Printf("IDX(in): %s: %d files", nodeID, len(fs))
 	}
-
-	repo := make(map[string]scanner.File)
-	for _, f := range files {
-		m.indexUpdate(repo, f)
-	}
-
-	m.rmut.Lock()
-	m.remote[nodeID] = repo
-	m.rmut.Unlock()
-
-	m.recomputeGlobal()
-	m.recomputeNeedForFiles(files)
 }
 
 // IndexUpdate is called for incremental updates to connected nodes' indexes.
@@ -313,45 +290,14 @@ func (m *Model) IndexUpdate(nodeID string, fs []protocol.FileInfo) {
 		files[i] = fileFromFileInfo(fs[i])
 	}
 
-	m.imut.Lock()
-	defer m.imut.Unlock()
+	m.fmut.Lock()
+	cid := m.cm.Get(nodeID)
+	m.fs.AddRemote(cid, files)
+	m.fmut.Unlock()
 
 	if debugNet {
 		dlog.Printf("IDXUP(in): %s: %d files", nodeID, len(files))
 	}
-
-	m.rmut.Lock()
-	repo, ok := m.remote[nodeID]
-	if !ok {
-		warnf("Index update from node %s that does not have an index", nodeID)
-		m.rmut.Unlock()
-		return
-	}
-
-	for _, f := range files {
-		m.indexUpdate(repo, f)
-	}
-	m.rmut.Unlock()
-
-	m.recomputeGlobal()
-	m.recomputeNeedForFiles(files)
-}
-
-func (m *Model) indexUpdate(repo map[string]scanner.File, f scanner.File) {
-	if debugIdx {
-		var flagComment string
-		if f.Flags&protocol.FlagDeleted != 0 {
-			flagComment = " (deleted)"
-		}
-		dlog.Printf("IDX(in): %q m=%d f=%o%s v=%d (%d blocks)", f.Name, f.Modified, f.Flags, flagComment, f.Version, len(f.Blocks))
-	}
-
-	if extraFlags := f.Flags &^ (protocol.FlagInvalid | protocol.FlagDeleted | 0xfff); extraFlags != 0 {
-		warnf("IDX(in): Unknown flags 0x%x in index record %+v", extraFlags, f)
-		return
-	}
-
-	repo[f.Name] = f
 }
 
 // Close removes the peer from the model and closes the underlying connection if possible.
@@ -368,38 +314,30 @@ func (m *Model) Close(node string, err error) {
 
 	m.fq.RemoveAvailable(node)
 
-	m.pmut.Lock()
-	m.rmut.Lock()
+	m.fmut.Lock()
+	cid := m.cm.Get(node)
+	m.fs.SetRemote(cid, nil)
+	m.cm.Clear(node)
+	m.fmut.Unlock()
 
+	m.pmut.Lock()
 	conn, ok := m.rawConn[node]
 	if ok {
 		conn.Close()
 	}
-
-	delete(m.remote, node)
 	delete(m.protoConn, node)
 	delete(m.rawConn, node)
-
-	m.rmut.Unlock()
 	m.pmut.Unlock()
-
-	m.recomputeGlobal()
-	m.recomputeNeedForGlobal()
 }
 
 // Request returns the specified data segment by reading it from local disk.
 // Implements the protocol.Model interface.
 func (m *Model) Request(nodeID, repo, name string, offset int64, size int) ([]byte, error) {
-	// Verify that the requested file exists in the local and global model.
-	m.lmut.RLock()
-	lf, localOk := m.local[name]
-	m.lmut.RUnlock()
-
-	m.gmut.RLock()
-	_, globalOk := m.global[name]
-	m.gmut.RUnlock()
-
-	if !localOk || !globalOk {
+	// Verify that the requested file exists in the local model.
+	m.fmut.Lock()
+	lf := m.fs.Get(0, name)
+	m.fmut.Unlock()
+	if offset > lf.Size {
 		warnf("SECURITY (nonexistent file) REQ(in): %s: %q o=%d s=%d", nodeID, name, offset, size)
 		return nil, ErrNoSuchFile
 	}
@@ -431,6 +369,8 @@ func (m *Model) Request(nodeID, repo, name string, offset int64, size int) ([]by
 
 	return buf, nil
 }
+
+// HERERERERER
 
 // ReplaceLocal replaces the local repository index with the given list of files.
 func (m *Model) ReplaceLocal(fs []scanner.File) {
