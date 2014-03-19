@@ -90,6 +90,10 @@ func (m *Set) Global() []scanner.File {
 	return fs
 }
 
+func (m *Set) Get(cid uint, file string) scanner.File {
+	return m.files[m.remoteKey[cid]].File
+}
+
 func (m *Set) Availability(name string) bitset {
 	return m.globalAvailability[name]
 }

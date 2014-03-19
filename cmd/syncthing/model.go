@@ -695,25 +695,6 @@ func (m *Model) updateLocal(f scanner.File) {
 	}
 }
 
-/*
-XXX: Not done, needs elegant handling of availability
-
-func (m *Model) recomputeGlobalFor(files []scanner.File) bool {
-	m.gmut.Lock()
-	defer m.gmut.Unlock()
-
-	var updated bool
-	for _, f := range files {
-		if gf, ok := m.global[f.Name]; !ok || f.NewerThan(gf) {
-			m.global[f.Name] = f
-			updated = true
-			// Fix availability
-		}
-	}
-	return updated
-}
-*/
-
 func (m *Model) recomputeGlobal() {
 	var newGlobal = make(map[string]scanner.File)
 
