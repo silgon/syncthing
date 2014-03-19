@@ -12,12 +12,16 @@ import (
 	"time"
 
 	"github.com/calmh/syncthing/buffers"
+	"github.com/calmh/syncthing/cid"
+	"github.com/calmh/syncthing/files"
 	"github.com/calmh/syncthing/protocol"
 	"github.com/calmh/syncthing/scanner"
 )
 
 type Model struct {
 	dir string
+	cm  *cid.Map
+	fs  files.Set
 
 	global    map[string]scanner.File // the latest version of each file as it exists in the cluster
 	gmut      sync.RWMutex            // protects global
@@ -76,6 +80,8 @@ var (
 func NewModel(dir string, maxChangeBw int) *Model {
 	m := &Model{
 		dir:          dir,
+		cm:           cid.NewMap(),
+		fs:           files.NewSet(),
 		global:       make(map[string]scanner.File),
 		local:        make(map[string]scanner.File),
 		remote:       make(map[string]map[string]scanner.File),
