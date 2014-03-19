@@ -21,15 +21,9 @@ import (
 type Model struct {
 	dir  string
 	cm   *cid.Map
-	fs   files.Set
+	fs   *files.Set
 	fmut sync.Mutex
 
-	global    map[string]scanner.File // the latest version of each file as it exists in the cluster
-	gmut      sync.RWMutex            // protects global
-	local     map[string]scanner.File // the files we currently have locally on disk
-	lmut      sync.RWMutex            // protects local
-	remote    map[string]map[string]scanner.File
-	rmut      sync.RWMutex // protects remote
 	protoConn map[string]Connection
 	rawConn   map[string]io.Closer
 	pmut      sync.RWMutex // protects protoConn and rawConn
@@ -83,9 +77,6 @@ func NewModel(dir string, maxChangeBw int) *Model {
 		dir:          dir,
 		cm:           cid.NewMap(),
 		fs:           files.NewSet(),
-		global:       make(map[string]scanner.File),
-		local:        make(map[string]scanner.File),
-		remote:       make(map[string]map[string]scanner.File),
 		protoConn:    make(map[string]Connection),
 		rawConn:      make(map[string]io.Closer),
 		lastIdxBcast: time.Now(),
@@ -165,7 +156,6 @@ func (m *Model) ConnectionStats() map[string]ConnectionInfo {
 
 	m.fmut.Lock()
 	m.pmut.RLock()
-	m.rmut.RLock()
 
 	var tot int64
 	for _, f := range m.fs.Global() {
@@ -200,14 +190,13 @@ func (m *Model) ConnectionStats() map[string]ConnectionInfo {
 		res[node] = ci
 	}
 
-	m.rmut.RUnlock()
 	m.pmut.RUnlock()
 	m.fmut.Unlock()
 
 	return res
 }
 
-func sizeOf(fs []File) (files, deleted int, bytes int64) {
+func sizeOf(fs []scanner.File) (files, deleted int, bytes int64) {
 	for _, f := range fs {
 		if f.Flags&protocol.FlagDeleted == 0 {
 			files++
@@ -216,12 +205,13 @@ func sizeOf(fs []File) (files, deleted int, bytes int64) {
 			deleted++
 		}
 	}
+	return
 }
 
 // GlobalSize returns the number of files, deleted files and total bytes for all
 // files in the global model.
 func (m *Model) GlobalSize() (files, deleted int, bytes int64) {
-	m.fmut.RLock()
+	m.fmut.Lock()
 	fs := m.fs.Global()
 	m.fmut.Unlock()
 	return sizeOf(fs)
@@ -230,18 +220,18 @@ func (m *Model) GlobalSize() (files, deleted int, bytes int64) {
 // LocalSize returns the number of files, deleted files and total bytes for all
 // files in the local repository.
 func (m *Model) LocalSize() (files, deleted int, bytes int64) {
-	m.fmut.RLock()
-	fs := m.fs.Have(0)
+	m.fmut.Lock()
+	fs := m.fs.Have(cid.LocalID)
 	m.fmut.Unlock()
 	return sizeOf(fs)
 }
 
 // InSyncSize returns the number and total byte size of the local files that
 // are in sync with the global model.
-func (m *Model) InSyncSize() (files, bytes int64) {
-	m.fmut.RLock()
+func (m *Model) InSyncSize() (files int, bytes int64) {
+	m.fmut.Lock()
 	gf := m.fs.Global()
-	hf := m.fs.Need(0)
+	hf := m.fs.Need(cid.LocalID)
 	m.fmut.Unlock()
 
 	gn, _, gb := sizeOf(gf)
@@ -253,11 +243,11 @@ func (m *Model) InSyncSize() (files, bytes int64) {
 // NeedFiles returns the list of currently needed files and the total size.
 func (m *Model) NeedFiles() ([]scanner.File, int64) {
 	m.fmut.Lock()
-	nf := m.fs.Need(0)
+	nf := m.fs.Need(cid.LocalID)
 	m.fmut.Unlock()
 
 	var bytes int64
-	for _, n := range nf {
+	for _, f := range nf {
 		bytes += f.Size
 	}
 
@@ -335,7 +325,7 @@ func (m *Model) Close(node string, err error) {
 func (m *Model) Request(nodeID, repo, name string, offset int64, size int) ([]byte, error) {
 	// Verify that the requested file exists in the local model.
 	m.fmut.Lock()
-	lf := m.fs.Get(0, name)
+	lf := m.fs.Get(cid.LocalID, name)
 	m.fmut.Unlock()
 	if offset > lf.Size {
 		warnf("SECURITY (nonexistent file) REQ(in): %s: %q o=%d s=%d", nodeID, name, offset, size)
@@ -370,67 +360,30 @@ func (m *Model) Request(nodeID, repo, name string, offset int64, size int) ([]by
 	return buf, nil
 }
 
-// HERERERERER
-
 // ReplaceLocal replaces the local repository index with the given list of files.
 func (m *Model) ReplaceLocal(fs []scanner.File) {
-	var updated bool
-	var newLocal = make(map[string]scanner.File)
-
-	m.lmut.RLock()
-	for _, f := range fs {
-		newLocal[f.Name] = f
-		if ef := m.local[f.Name]; !ef.Equals(f) {
-			updated = true
-		}
-	}
-	m.lmut.RUnlock()
-
-	if m.markDeletedLocals(newLocal) {
-		updated = true
-	}
-
-	m.lmut.RLock()
-	if len(newLocal) != len(m.local) {
-		updated = true
-	}
-	m.lmut.RUnlock()
-
-	if updated {
-		m.lmut.Lock()
-		m.local = newLocal
-		m.lmut.Unlock()
-
-		m.recomputeGlobal()
-		m.recomputeNeedForGlobal()
-
-		m.umut.Lock()
-		m.updatedLocal = time.Now().Unix()
-		m.lastIdxBcastRequest = time.Now()
-		m.umut.Unlock()
-	}
+	m.fmut.Lock()
+	m.fs.SetLocal(fs)
+	m.fmut.Unlock()
 }
 
-// SeedLocal replaces the local repository index with the given list of files,
-// in protocol data types. Does not track deletes, should only be used to seed
-// the local index from a cache file at startup.
+// ReplaceLocal replaces the local repository index with the given list of files.
 func (m *Model) SeedLocal(fs []protocol.FileInfo) {
-	m.lmut.Lock()
-	m.local = make(map[string]scanner.File)
-	for _, f := range fs {
-		m.local[f.Name] = fileFromFileInfo(f)
+	var sfs = make([]scanner.File, len(fs))
+	for i := 0; i < len(fs); i++ {
+		sfs[i] = fileFromFileInfo(fs[i])
 	}
-	m.lmut.Unlock()
 
-	m.recomputeGlobal()
-	m.recomputeNeedForGlobal()
+	m.fmut.Lock()
+	m.fs.SetLocalNoDelete(sfs)
+	m.fmut.Unlock()
 }
 
 // Implements scanner.CurrentFiler
 func (m *Model) CurrentFile(file string) scanner.File {
-	m.lmut.RLock()
-	f := m.local[file]
-	m.lmut.RUnlock()
+	m.fmut.Lock()
+	f := m.fs.Get(cid.LocalID, file)
+	m.fmut.Unlock()
 	return f
 }
 
@@ -509,9 +462,11 @@ func (m *Model) AddConnection(rawConn io.Closer, protoConn Connection) {
 func (m *Model) ProtocolIndex() []protocol.FileInfo {
 	var index []protocol.FileInfo
 
-	m.lmut.RLock()
+	m.fmut.Lock()
+	fs := m.fs.Have(cid.LocalID)
+	m.fmut.Unlock()
 
-	for _, f := range m.local {
+	for _, f := range fs {
 		mf := fileInfoFromFile(f)
 		if debugIdx {
 			var flagComment string
@@ -523,8 +478,13 @@ func (m *Model) ProtocolIndex() []protocol.FileInfo {
 		index = append(index, mf)
 	}
 
-	m.lmut.RUnlock()
 	return index
+}
+
+func (m *Model) updateLocal(f scanner.File) {
+	m.fmut.Lock()
+	m.fs.AddLocal([]scanner.File{f})
+	m.fmut.Unlock()
 }
 
 func (m *Model) requestGlobal(nodeID, name string, offset int64, size int, hash []byte) ([]byte, error) {
@@ -578,223 +538,6 @@ func (m *Model) broadcastIndexLoop() {
 		}
 		time.Sleep(idxBcastHoldtime)
 	}
-}
-
-// markDeletedLocals sets the deleted flag on files that have gone missing locally.
-func (m *Model) markDeletedLocals(newLocal map[string]scanner.File) bool {
-	// For every file in the existing local table, check if they are also
-	// present in the new local table. If they are not, check that we already
-	// had the newest version available according to the global table and if so
-	// note the file as having been deleted.
-	var updated bool
-
-	m.gmut.RLock()
-	m.lmut.RLock()
-
-	for n, f := range m.local {
-		if _, ok := newLocal[n]; !ok {
-			if gf := m.global[n]; !gf.NewerThan(f) {
-				if f.Flags&protocol.FlagDeleted == 0 {
-					f.Flags = protocol.FlagDeleted
-					f.Version++
-					f.Blocks = nil
-					updated = true
-				}
-				newLocal[n] = f
-			}
-		}
-	}
-
-	m.lmut.RUnlock()
-	m.gmut.RUnlock()
-
-	return updated
-}
-
-func (m *Model) updateLocal(f scanner.File) {
-	var updated bool
-
-	m.lmut.Lock()
-	if ef, ok := m.local[f.Name]; !ok || !ef.Equals(f) {
-		m.local[f.Name] = f
-		updated = true
-	}
-	m.lmut.Unlock()
-
-	if updated {
-		m.recomputeGlobal()
-		// We don't recomputeNeed here for two reasons:
-		// - a need shouldn't have arisen due to having a newer local file
-		// - recomputeNeed might call into fq.Add but we might have been called by
-		//   fq which would be a deadlock on fq
-
-		m.umut.Lock()
-		m.updatedLocal = time.Now().Unix()
-		m.lastIdxBcastRequest = time.Now()
-		m.umut.Unlock()
-	}
-}
-
-func (m *Model) recomputeGlobal() {
-	var newGlobal = make(map[string]scanner.File)
-
-	m.lmut.RLock()
-	for n, f := range m.local {
-		newGlobal[n] = f
-	}
-	m.lmut.RUnlock()
-
-	var available = make(map[string][]string)
-
-	m.rmut.RLock()
-	var highestMod int64
-	for nodeID, fs := range m.remote {
-		for n, nf := range fs {
-			if lf, ok := newGlobal[n]; !ok || nf.NewerThan(lf) {
-				newGlobal[n] = nf
-				available[n] = []string{nodeID}
-				if nf.Modified > highestMod {
-					highestMod = nf.Modified
-				}
-			} else if lf.Equals(nf) {
-				available[n] = append(available[n], nodeID)
-			}
-		}
-	}
-	m.rmut.RUnlock()
-
-	for f, ns := range available {
-		m.fq.SetAvailable(f, ns)
-	}
-
-	// Figure out if anything actually changed
-
-	m.gmut.RLock()
-	var updated bool
-	if highestMod > m.updateGlobal || len(newGlobal) != len(m.global) {
-		updated = true
-	} else {
-		for n, f0 := range newGlobal {
-			if f1, ok := m.global[n]; !ok || !f0.Equals(f1) {
-				updated = true
-				break
-			}
-		}
-	}
-	m.gmut.RUnlock()
-
-	if updated {
-		m.gmut.Lock()
-		m.umut.Lock()
-		m.global = newGlobal
-		m.updateGlobal = time.Now().Unix()
-		m.umut.Unlock()
-		m.gmut.Unlock()
-	}
-}
-
-type addOrder struct {
-	n      string
-	remote []scanner.Block
-	fm     *fileMonitor
-}
-
-func (m *Model) recomputeNeedForGlobal() {
-	var toDelete []scanner.File
-	var toAdd []addOrder
-
-	m.gmut.RLock()
-
-	for _, gf := range m.global {
-		toAdd, toDelete = m.recomputeNeedForFile(gf, toAdd, toDelete)
-	}
-
-	m.gmut.RUnlock()
-
-	for _, ao := range toAdd {
-		m.fq.Add(ao.n, ao.remote, ao.fm)
-	}
-	for _, gf := range toDelete {
-		m.dq <- gf
-	}
-}
-
-func (m *Model) recomputeNeedForFiles(files []scanner.File) {
-	var toDelete []scanner.File
-	var toAdd []addOrder
-
-	m.gmut.RLock()
-
-	for _, gf := range files {
-		toAdd, toDelete = m.recomputeNeedForFile(gf, toAdd, toDelete)
-	}
-
-	m.gmut.RUnlock()
-
-	for _, ao := range toAdd {
-		m.fq.Add(ao.n, ao.remote, ao.fm)
-	}
-	for _, gf := range toDelete {
-		m.dq <- gf
-	}
-}
-
-func (m *Model) recomputeNeedForFile(gf scanner.File, toAdd []addOrder, toDelete []scanner.File) ([]addOrder, []scanner.File) {
-	m.lmut.RLock()
-	lf, ok := m.local[gf.Name]
-	m.lmut.RUnlock()
-
-	if !ok || gf.NewerThan(lf) {
-		if gf.Suppressed {
-			// Never attempt to sync invalid files
-			return toAdd, toDelete
-		}
-		if gf.Flags&protocol.FlagDeleted != 0 && !m.delete {
-			// Don't want to delete files, so forget this need
-			return toAdd, toDelete
-		}
-		if gf.Flags&protocol.FlagDeleted != 0 && !ok {
-			// Don't have the file, so don't need to delete it
-			return toAdd, toDelete
-		}
-		if debugNeed {
-			dlog.Printf("need: lf:%v gf:%v", lf, gf)
-		}
-
-		if gf.Flags&protocol.FlagDeleted != 0 {
-			toDelete = append(toDelete, gf)
-		} else {
-			local, remote := scanner.BlockDiff(lf.Blocks, gf.Blocks)
-			fm := fileMonitor{
-				name:        FSNormalize(gf.Name),
-				path:        FSNormalize(path.Clean(path.Join(m.dir, gf.Name))),
-				global:      gf,
-				model:       m,
-				localBlocks: local,
-			}
-			toAdd = append(toAdd, addOrder{gf.Name, remote, &fm})
-		}
-	}
-
-	return toAdd, toDelete
-}
-
-func (m *Model) WhoHas(name string) []string {
-	var remote []string
-
-	m.gmut.RLock()
-	m.rmut.RLock()
-
-	gf := m.global[name]
-	for node, files := range m.remote {
-		if file, ok := files[name]; ok && file.Equals(gf) {
-			remote = append(remote, node)
-		}
-	}
-
-	m.rmut.RUnlock()
-	m.gmut.RUnlock()
-	return remote
 }
 
 func (m *Model) deleteLoop() {

@@ -1,7 +1,31 @@
 // Package files provides a set type to track local/remote files with newness checks.
 package files
 
-import "github.com/calmh/syncthing/scanner"
+/*
+
+Delete and version handling
+
+SetLocal handles deletes. Any files currently in the local set that are
+missing in the new set are marked as deleted. This is done by bumping the
+version and clearing the size and blocks fields.
+
+SetLocalNoDelete does not do this; it simply replaces the local set with that
+which was given.
+
+AddLocal handles versioning. For files currently missing in the local set and
+for files that have a nonzero version field, the version field is copied
+verbatim. For files that exist in the local set and where the new version
+field is zero, we set the version field to the existing value plus one.
+
+The AddRemote and SetRemote methods never alter the file structs.
+
+*/
+
+import (
+	"github.com/calmh/syncthing/cid"
+	"github.com/calmh/syncthing/protocol"
+	"github.com/calmh/syncthing/scanner"
+)
 
 type key struct {
 	Name    string
@@ -43,11 +67,34 @@ func NewSet() *Set {
 }
 
 func (m *Set) AddLocal(fs []scanner.File) {
-	m.addRemote(0, fs)
+	m.addRemote(cid.LocalID, fs)
 }
 
 func (m *Set) SetLocal(fs []scanner.File) {
-	m.setRemote(0, fs)
+	// For previously existing files not in the list, add them to the list
+	// with the relevant delete flags etc set.
+
+	var nf = make(map[string]bool, len(fs))
+	for _, f := range fs {
+		nf[f.Name] = true
+	}
+
+	for _, ck := range m.remoteKey[cid.LocalID] {
+		if _, ok := nf[ck.Name]; !ok {
+			cf := m.files[ck].File
+			cf.Flags = protocol.FlagDeleted
+			cf.Blocks = nil
+			cf.Size = 0
+			cf.Version++
+			fs = append(fs, cf)
+		}
+	}
+
+	m.SetLocalNoDelete(fs)
+}
+
+func (m *Set) SetLocalNoDelete(fs []scanner.File) {
+	m.setRemote(cid.LocalID, fs)
 }
 
 func (m *Set) AddRemote(cid uint, fs []scanner.File) {
@@ -91,7 +138,7 @@ func (m *Set) Global() []scanner.File {
 }
 
 func (m *Set) Get(cid uint, file string) scanner.File {
-	return m.files[m.remoteKey[cid]].File
+	return m.files[m.remoteKey[cid][file]].File
 }
 
 func (m *Set) Availability(name string) bitset {
@@ -107,6 +154,11 @@ func (m *Set) addRemote(cid uint, fs []scanner.File) {
 		if ck, ok := remFiles[n]; ok && ck == fk {
 			// The remote already has exactly this file, skip it
 			continue
+		}
+
+		// If the caller didn't set a version, set it to current plus one
+		if fk.Version == 0 {
+			fk.Version = remFiles[n].Version + 1
 		}
 
 		remFiles[n] = fk

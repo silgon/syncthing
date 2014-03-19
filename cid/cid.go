@@ -2,17 +2,23 @@
 package cid
 
 type Map struct {
-	toCid  map[string]int
+	toCid  map[string]uint
 	toName []string
 }
 
+var (
+	LocalName      = "<local>"
+	LocalID   uint = 0
+)
+
 func NewMap() *Map {
 	return &Map{
-		toCid: make(map[string]int),
+		toCid:  map[string]uint{"<local>": 0},
+		toName: []string{"<local>"},
 	}
 }
 
-func (m *Map) Get(name string) int {
+func (m *Map) Get(name string) uint {
 	cid, ok := m.toCid[name]
 	if ok {
 		return cid
@@ -22,14 +28,14 @@ func (m *Map) Get(name string) int {
 	for i, n := range m.toName {
 		if n == "" {
 			m.toName[i] = name
-			m.toCid[name] = i
-			return i
+			m.toCid[name] = uint(i)
+			return uint(i)
 		}
 	}
 
 	// Add it to the end since we didn't find a free slot
 	m.toName = append(m.toName, name)
-	cid = len(m.toName) - 1
+	cid = uint(len(m.toName) - 1)
 	m.toCid[name] = cid
 	return cid
 }
