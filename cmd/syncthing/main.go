@@ -439,6 +439,8 @@ listen:
 
 		if m.ConnectedTo(remoteID) {
 			warnf("Connect from connected node (%s)", remoteID)
+			conn.Close()
+			continue
 		}
 
 		for _, nodeCfg := range cfg.Repositories[0].Nodes {

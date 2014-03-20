@@ -13,7 +13,7 @@ type File struct {
 }
 
 func (f File) String() string {
-	return fmt.Sprintf("File{Name:%q, Flags:0x%x, Modified:%d, Version:%d, Size:%d, NumBlocks:%d}",
+	return fmt.Sprintf("File{Name:%q, Flags:0%o, Modified:%d, Version:%d, Size:%d, NumBlocks:%d}",
 		f.Name, f.Flags, f.Modified, f.Version, f.Size, len(f.Blocks))
 }
 

@@ -40,6 +40,10 @@ func (m *Map) Get(name string) uint {
 	return cid
 }
 
+func (m *Map) Name(cid uint) string {
+	return m.toName[cid]
+}
+
 func (m *Map) Clear(name string) {
 	cid, ok := m.toCid[name]
 	if ok {

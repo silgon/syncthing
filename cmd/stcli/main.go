@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 
 	"github.com/calmh/syncthing/protocol"
 )
@@ -15,6 +16,8 @@ var (
 	cmd     string
 	confDir string
 	target  string
+	get     string
+	pc      *protocol.Connection
 )
 
 func main() {
@@ -24,6 +27,7 @@ func main() {
 	flag.StringVar(&cmd, "cmd", "idx", "Command")
 	flag.StringVar(&confDir, "home", ".", "Certificates directory")
 	flag.StringVar(&target, "target", "127.0.0.1:22000", "Target node")
+	flag.StringVar(&get, "get", "", "Get file")
 	flag.BoolVar(&exit, "exit", false, "Exit after command")
 	flag.Parse()
 
@@ -57,7 +61,7 @@ func connect(target string) {
 
 	remoteID := certID(conn.ConnectionState().PeerCertificates[0].Raw)
 
-	protocol.NewConnection(remoteID, conn, conn, Model{}, nil)
+	pc = protocol.NewConnection(remoteID, conn, conn, Model{}, nil)
 
 	select {}
 }
@@ -67,7 +71,7 @@ type Model struct {
 
 func prtIndex(files []protocol.FileInfo) {
 	for _, f := range files {
-		log.Printf("%q (v:%d mod:%d flag:0x%x)", f.Name, f.Version, f.Modified, f.Flags)
+		log.Printf("%q (v:%d mod:%d flags:0%o nblocks:%d)", f.Name, f.Version, f.Modified, f.Flags, len(f.Blocks))
 		for _, b := range f.Blocks {
 			log.Printf("    %6d %x", b.Size, b.Hash)
 		}
@@ -78,10 +82,39 @@ func (m Model) Index(nodeID string, files []protocol.FileInfo) {
 	log.Printf("Received index")
 	if cmd == "idx" {
 		prtIndex(files)
-		if exit {
+		if get != "" {
+			for _, f := range files {
+				if f.Name == get {
+					go getFile(f)
+					break
+				}
+			}
+		} else if exit {
 			os.Exit(0)
 		}
 	}
+}
+
+func getFile(f protocol.FileInfo) {
+	fn := path.Base(f.Name)
+	fd, err := os.Create(fn)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var offset int64
+	for _, b := range f.Blocks {
+		log.Printf("Request %q %d - %d", f.Name, offset, offset+int64(b.Size))
+		bs, err := pc.Request("default", f.Name, offset, int(b.Size))
+		log.Printf(" - got %d bytes", len(bs))
+		if err != nil {
+			log.Fatal(err)
+		}
+		offset += int64(b.Size)
+		fd.Write(bs)
+	}
+
+	fd.Close()
 }
 
 func (m Model) IndexUpdate(nodeID string, files []protocol.FileInfo) {

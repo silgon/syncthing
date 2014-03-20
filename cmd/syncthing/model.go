@@ -403,44 +403,6 @@ func (m *Model) AddConnection(rawConn io.Closer, protoConn Connection) {
 		}
 		protoConn.Index("default", idx)
 	}()
-
-	m.initmut.Lock()
-	rw := m.rwRunning
-	m.initmut.Unlock()
-	if !rw {
-		return
-	}
-
-	for i := 0; i < m.parallelRequests; i++ {
-		i := i
-		go func() {
-			if debugPull {
-				dlog.Println("starting puller:", nodeID, i)
-			}
-			for {
-				m.pmut.RLock()
-				if _, ok := m.protoConn[nodeID]; !ok {
-					if debugPull {
-						dlog.Println("stopping puller:", nodeID, i)
-					}
-					m.pmut.RUnlock()
-					return
-				}
-				m.pmut.RUnlock()
-
-				qb, ok := m.fq.Get(nodeID)
-				if ok {
-					if debugPull {
-						dlog.Println("request: out", nodeID, i, qb.name, qb.block.Offset)
-					}
-					data, _ := protoConn.Request("default", qb.name, qb.block.Offset, int(qb.block.Size))
-					m.fq.Done(qb.name, qb.block.Offset, data)
-				} else {
-					time.Sleep(1 * time.Second)
-				}
-			}
-		}()
-	}
 }
 
 // ProtocolIndex returns the current local index in protocol data types.

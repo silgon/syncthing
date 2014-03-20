@@ -12,13 +12,6 @@ version and clearing the size and blocks fields.
 SetLocalNoDelete does not do this; it simply replaces the local set with that
 which was given.
 
-AddLocal handles versioning. For files currently missing in the local set and
-for files that have a nonzero version field, the version field is copied
-verbatim. For files that exist in the local set and where the new version
-field is zero, we set the version field to the existing value plus one.
-
-The AddRemote and SetRemote methods never alter the file structs.
-
 */
 
 import (
@@ -175,12 +168,6 @@ func (m *Set) addRemote(cid uint, fs []scanner.File) {
 		if ck, ok := remFiles[n]; ok && ck == fk {
 			// The remote already has exactly this file, skip it
 			continue
-		}
-
-		// If the caller didn't set a version, set it to current plus one
-		if fk.Version == 0 {
-			fk.Version = remFiles[n].Version + 1
-			f.Version = fk.Version
 		}
 
 		remFiles[n] = fk

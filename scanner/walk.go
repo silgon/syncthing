@@ -182,6 +182,8 @@ func (w *Walker) walkAndHashFiles(res *[]File, ign map[string][]string) filepath
 		}
 
 		if info.Mode()&os.ModeType == 0 {
+			var version uint32
+
 			if w.CurrentFiler != nil {
 				cf := w.CurrentFiler.CurrentFile(rn)
 				if cf.Modified == info.ModTime().Unix() {
@@ -193,19 +195,23 @@ func (w *Walker) walkAndHashFiles(res *[]File, ign map[string][]string) filepath
 				}
 
 				if w.Suppressor != nil && w.Suppressor.Suppress(rn, info) {
-					if debug {
-						dlog.Println("suppressed:", rn)
-					}
 					if !w.suppressed[rn] {
 						w.suppressed[rn] = true
 						log.Printf("INFO: Changes to %q are being temporarily suppressed because it changes too frequently.", p)
+						cf.Suppressed = true
+						cf.Version++
 					}
-					cf.Suppressed = true
+					if debug {
+						dlog.Println("suppressed:", cf)
+					}
 					*res = append(*res, cf)
+					return nil
 				} else if w.suppressed[rn] {
 					log.Printf("INFO: Changes to %q are no longer suppressed.", p)
 					delete(w.suppressed, rn)
 				}
+
+				version = cf.Version + 1
 			}
 
 			fd, err := os.Open(p)
@@ -231,6 +237,7 @@ func (w *Walker) walkAndHashFiles(res *[]File, ign map[string][]string) filepath
 			}
 			f := File{
 				Name:     rn,
+				Version:  version,
 				Size:     info.Size(),
 				Flags:    uint32(info.Mode()),
 				Modified: info.ModTime().Unix(),
