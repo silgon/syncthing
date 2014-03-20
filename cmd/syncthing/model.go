@@ -33,12 +33,6 @@ type Model struct {
 	fq *FileQueue
 	dq chan scanner.File // queue for files to delete
 
-	updatedLocal        int64 // timestamp of last update to local
-	updateGlobal        int64 // timestamp of last update to remote
-	lastIdxBcast        time.Time
-	lastIdxBcastRequest time.Time
-	umut                sync.RWMutex // provides updated* and lastIdx*
-
 	rwRunning bool
 	delete    bool
 	initmut   sync.Mutex // protects rwRunning and delete
@@ -74,15 +68,14 @@ var (
 // for file data without altering the local repository in any way.
 func NewModel(dir string, maxChangeBw int) *Model {
 	m := &Model{
-		dir:          dir,
-		cm:           cid.NewMap(),
-		fs:           files.NewSet(),
-		protoConn:    make(map[string]Connection),
-		rawConn:      make(map[string]io.Closer),
-		lastIdxBcast: time.Now(),
-		sup:          suppressor{threshold: int64(maxChangeBw)},
-		fq:           NewFileQueue(),
-		dq:           make(chan scanner.File),
+		dir:       dir,
+		cm:        cid.NewMap(),
+		fs:        files.NewSet(),
+		protoConn: make(map[string]Connection),
+		rawConn:   make(map[string]io.Closer),
+		sup:       suppressor{threshold: int64(maxChangeBw)},
+		fq:        NewFileQueue(),
+		dq:        make(chan scanner.File),
 	}
 
 	go m.broadcastIndexLoop()
@@ -127,17 +120,10 @@ func (m *Model) StartRW(del bool, threads int) {
 // Generation returns an opaque integer that is guaranteed to increment on
 // every change to the local repository or global model.
 func (m *Model) Generation() int64 {
-	m.umut.RLock()
-	defer m.umut.RUnlock()
-
-	return m.updatedLocal + m.updateGlobal
-}
-
-func (m *Model) LocalAge() float64 {
-	m.umut.RLock()
-	defer m.umut.RUnlock()
-
-	return time.Since(time.Unix(m.updatedLocal, 0)).Seconds()
+	m.fmut.Lock()
+	c := m.fs.Changes()
+	m.fmut.Unlock()
+	return c
 }
 
 type ConnectionInfo struct {
@@ -504,39 +490,42 @@ func (m *Model) requestGlobal(nodeID, name string, offset int64, size int, hash 
 }
 
 func (m *Model) broadcastIndexLoop() {
+	var lastChange int64
 	for {
-		m.umut.RLock()
-		bcastRequested := m.lastIdxBcastRequest.After(m.lastIdxBcast)
-		holdtimeExceeded := time.Since(m.lastIdxBcastRequest) > idxBcastHoldtime
-		m.umut.RUnlock()
+		time.Sleep(5 * time.Second)
 
-		maxDelayExceeded := time.Since(m.lastIdxBcast) > idxBcastMaxDelay
-		if bcastRequested && (holdtimeExceeded || maxDelayExceeded) {
-			idx := m.ProtocolIndex()
-
-			var indexWg sync.WaitGroup
-			indexWg.Add(len(m.protoConn))
-
-			m.umut.Lock()
-			m.lastIdxBcast = time.Now()
-			m.umut.Unlock()
-
-			m.pmut.RLock()
-			for _, node := range m.protoConn {
-				node := node
-				if debugNet {
-					dlog.Printf("IDX(out/loop): %s: %d files", node.ID(), len(idx))
-				}
-				go func() {
-					node.Index("default", idx)
-					indexWg.Done()
-				}()
-			}
-			m.pmut.RUnlock()
-
-			indexWg.Wait()
+		m.fmut.Lock()
+		c := m.fs.Changes()
+		if c == lastChange {
+			m.fmut.Unlock()
+			continue
 		}
-		time.Sleep(idxBcastHoldtime)
+		lastChange = c
+		fs := m.fs.Have(cid.LocalID)
+		m.fmut.Unlock()
+
+		var indexWg sync.WaitGroup
+		indexWg.Add(len(m.protoConn))
+
+		var idx = make([]protocol.FileInfo, len(fs))
+		for i, f := range fs {
+			idx[i] = fileInfoFromFile(f)
+		}
+
+		m.pmut.RLock()
+		for _, node := range m.protoConn {
+			node := node
+			if debugNet {
+				dlog.Printf("IDX(out/loop): %s: %d files", node.ID(), len(idx))
+			}
+			go func() {
+				node.Index("default", idx)
+				indexWg.Done()
+			}()
+		}
+		m.pmut.RUnlock()
+
+		indexWg.Wait()
 	}
 }
 

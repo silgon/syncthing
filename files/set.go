@@ -51,6 +51,7 @@ func (a key) newerThan(b key) bool {
 }
 
 type Set struct {
+	changes            int64
 	files              map[key]fileRecord
 	remoteKey          [64]map[string]key
 	globalAvailability map[string]bitset
@@ -68,33 +69,49 @@ func NewSet() *Set {
 
 func (m *Set) AddLocal(fs []scanner.File) {
 	m.addRemote(cid.LocalID, fs)
+	m.changes++
 }
 
 func (m *Set) SetLocal(fs []scanner.File) {
+	if len(fs) != len(m.remoteKey[cid.LocalID]) {
+		// We know something changed for sure
+		m.changes++
+	}
+
+	var nf = make(map[string]key, len(fs))
+	for _, f := range fs {
+		nf[f.Name] = keyFor(f)
+	}
+
 	// For previously existing files not in the list, add them to the list
 	// with the relevant delete flags etc set.
 
-	var nf = make(map[string]bool, len(fs))
-	for _, f := range fs {
-		nf[f.Name] = true
-	}
-
 	for _, ck := range m.remoteKey[cid.LocalID] {
-		if _, ok := nf[ck.Name]; !ok {
+		if nk, ok := nf[ck.Name]; !ok {
 			cf := m.files[ck].File
 			cf.Flags = protocol.FlagDeleted
 			cf.Blocks = nil
 			cf.Size = 0
 			cf.Version++
 			fs = append(fs, cf)
+			m.changes++
+			if debug {
+				dlog.Println("deleted:", ck.Name)
+			}
+		} else if nk != ck {
+			m.changes++
+			if debug {
+				dlog.Println("changed:", ck, nk)
+			}
 		}
 	}
 
-	m.SetLocalNoDelete(fs)
+	m.setRemote(cid.LocalID, fs)
 }
 
 func (m *Set) SetLocalNoDelete(fs []scanner.File) {
 	m.setRemote(cid.LocalID, fs)
+	m.changes++
 }
 
 func (m *Set) AddRemote(cid uint, fs []scanner.File) {
@@ -145,6 +162,10 @@ func (m *Set) Availability(name string) bitset {
 	return m.globalAvailability[name]
 }
 
+func (m *Set) Changes() int64 {
+	return m.changes
+}
+
 func (m *Set) addRemote(cid uint, fs []scanner.File) {
 	remFiles := m.remoteKey[cid]
 	for _, f := range fs {
@@ -159,6 +180,7 @@ func (m *Set) addRemote(cid uint, fs []scanner.File) {
 		// If the caller didn't set a version, set it to current plus one
 		if fk.Version == 0 {
 			fk.Version = remFiles[n].Version + 1
+			f.Version = fk.Version
 		}
 
 		remFiles[n] = fk

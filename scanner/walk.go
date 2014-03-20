@@ -186,7 +186,7 @@ func (w *Walker) walkAndHashFiles(res *[]File, ign map[string][]string) filepath
 				cf := w.CurrentFiler.CurrentFile(rn)
 				if cf.Modified == info.ModTime().Unix() {
 					if debug {
-						dlog.Println("unchanged:", rn)
+						dlog.Println("unchanged:", cf)
 					}
 					*res = append(*res, cf)
 					return nil

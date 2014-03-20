@@ -15,6 +15,7 @@ build() {
 		godep=
 	fi
 	${godep} go build -ldflags "-w -X main.Version $version" ./cmd/syncthing
+	${godep} go build -ldflags "-w -X main.Version $version" ./cmd/stcli
 }
 
 prepare() {

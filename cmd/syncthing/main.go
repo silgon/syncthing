@@ -56,7 +56,8 @@ const (
               - "net"      (connecting and disconnecting, network messages)
               - "idx"      (index sending and receiving)
               - "need"     (file need calculations)
-              - "pull"     (file pull activity)`
+              - "pull"     (file pull activity)
+              - "files"    (file set store)`
 )
 
 func main() {
@@ -281,15 +282,15 @@ func main() {
 		okln("Ready to synchronize (read only; no external updates accepted)")
 	}
 
-	// Periodically scan the repository and update the local
+	// Periodically scan the repository and update the local model.
 	// XXX: Should use some fsnotify mechanism.
 	go func() {
 		td := time.Duration(cfg.Options.RescanIntervalS) * time.Second
 		for {
 			time.Sleep(td)
-			if m.LocalAge() > (td / 2).Seconds() {
-				updateLocalModel(m, w)
-			}
+			m.fq.LockWhenIdle() // Guarantees that the file queue is empty and blocks pullers from starting
+			updateLocalModel(m, w)
+			m.fq.Unlock()
 		}
 	}()
 

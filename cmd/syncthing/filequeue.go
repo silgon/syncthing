@@ -21,6 +21,7 @@ type FileQueue struct {
 	availability map[string][]string
 	amut         sync.Mutex // protects availability
 	queued       map[string]bool
+	gmut         sync.Mutex // blocks get, can be held externally to pause pullers
 }
 
 type queuedFile struct {
@@ -95,6 +96,8 @@ func (q *FileQueue) Len() int {
 }
 
 func (q *FileQueue) Get(nodeID string) (queuedBlock, bool) {
+	q.gmut.Lock()
+	defer q.gmut.Unlock()
 	q.fmut.Lock()
 	defer q.fmut.Unlock()
 
@@ -145,6 +148,24 @@ func (q *FileQueue) Get(nodeID string) (queuedBlock, bool) {
 
 	// We found nothing to do
 	return queuedBlock{}, false
+}
+
+func (q *FileQueue) LockWhenIdle() {
+	for {
+		q.gmut.Lock()
+		q.fmut.Lock()
+		if len(q.files) == 0 {
+			q.fmut.Unlock()
+			return
+		}
+		q.fmut.Unlock()
+		q.gmut.Unlock()
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func (q *FileQueue) Unlock() {
+	q.gmut.Unlock()
 }
 
 func (q *FileQueue) Done(file string, offset int64, data []byte) {
