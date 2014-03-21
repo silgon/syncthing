@@ -282,18 +282,6 @@ func main() {
 		okln("Ready to synchronize (read only; no external updates accepted)")
 	}
 
-	// Periodically scan the repository and update the local model.
-	// XXX: Should use some fsnotify mechanism.
-	go func() {
-		td := time.Duration(cfg.Options.RescanIntervalS) * time.Second
-		for {
-			time.Sleep(td)
-			m.fq.LockWhenIdle() // Guarantees that the file queue is empty and blocks pullers from starting
-			updateLocalModel(m, w)
-			m.fq.Unlock()
-		}
-	}()
-
 	if verbose {
 		// Periodically print statistics
 		go printStatsLoop(m)

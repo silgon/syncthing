@@ -151,6 +151,10 @@ func (m *Set) Get(cid uint, file string) scanner.File {
 	return m.files[m.remoteKey[cid][file]].File
 }
 
+func (m *Set) GetGlobal(file string) scanner.File {
+	return m.files[m.globalKey[file]].File
+}
+
 func (m *Set) Availability(name string) bitset {
 	return m.globalAvailability[name]
 }

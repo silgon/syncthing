@@ -2,51 +2,7 @@
 
 package main
 
-import (
-	"os"
-	"sync"
-)
-
-type queuedBlock struct {
-	file   string
-	offset int64
-	size   int32
-	last   bool
-}
-
-type blockQueue struct {
-	blocks []queuedBlock
-	mutex  sync.Mutex
-	empty  sync.Cond
-}
-
-func newBlockQueue() *blockQueue {
-	q := &blockQueue{}
-	q.empty = sync.NewCond(q.mutex)
-	return q
-}
-
-func (q *blockQueue) put(b queuedBlock) {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	q.blocks = append(q.blocks, b)
-	q.empty.Signal()
-}
-
-func (q *blockQueue) get() queuedBlock {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	for len(q.blocks) == 0 {
-		q.empty.Wait()
-	}
-
-	b := q.blocks[0]
-	q.blocks = q.blocks[1:]
-
-	return b
-}
+import "os"
 
 type reqRes struct {
 	node   string
@@ -58,9 +14,12 @@ type reqRes struct {
 }
 
 type filestatus struct {
-	file        *os.File
-	outstanding int  // Number of Requests we still have outstanding
-	done        bool // We have sent all Requests for this file
+	file         *os.File
+	err          error
+	outstanding  int  // number of requests we still have outstanding
+	done         bool // we have sent all requests for this file
+	availability uint64
+	temp         string // temporary filename
 }
 
 const slots = 8
@@ -103,12 +62,15 @@ func (m *Model) puller() {
 
 		case b := <-requestQueue:
 			if fs, ok := files[b.Name]; !ok {
+				fs.temp = defTempNamer.TempName(b.Name)
+				fs.file, fs.err := os.Create(fs.temp)
 				// Open and copy file
+				fs.availability = m.fs.Availability(b.Name)
 			}
 			fs.outstanding++
 			fs.done = b.last
+			files[b.Name] = fs
 
-			availability := f.fs.Availability(b.Name)
 			// Select a peer
 			go func(node string, b queuedBlock) {
 				bs, err := m.protoConn[node].Request("default", b.name, b.offset, b.size)

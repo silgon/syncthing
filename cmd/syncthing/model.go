@@ -28,9 +28,7 @@ type Model struct {
 	rawConn   map[string]io.Closer
 	pmut      sync.RWMutex // protects protoConn and rawConn
 
-	// Queue for files to fetch. fq can call back into the model, so we must ensure
-	// to hold no locks when calling methods on fq.
-	fq *FileQueue
+	bq *blockQueue
 	dq chan scanner.File // queue for files to delete
 
 	rwRunning bool
@@ -73,9 +71,9 @@ func NewModel(dir string, maxChangeBw int) *Model {
 		fs:        files.NewSet(),
 		protoConn: make(map[string]Connection),
 		rawConn:   make(map[string]io.Closer),
-		sup:       suppressor{threshold: int64(maxChangeBw)},
-		fq:        NewFileQueue(),
+		bq:        newBlockQueue(),
 		dq:        make(chan scanner.File),
+		sup:       suppressor{threshold: int64(maxChangeBw)},
 	}
 
 	go m.broadcastIndexLoop()
@@ -251,6 +249,7 @@ func (m *Model) Index(nodeID string, fs []protocol.FileInfo) {
 	m.fmut.Lock()
 	cid := m.cm.Get(nodeID)
 	m.fs.SetRemote(cid, files)
+	m.queueNeededBlocks()
 	m.fmut.Unlock()
 
 	if debugNet {
@@ -267,12 +266,33 @@ func (m *Model) IndexUpdate(nodeID string, fs []protocol.FileInfo) {
 	}
 
 	m.fmut.Lock()
-	cid := m.cm.Get(nodeID)
-	m.fs.AddRemote(cid, files)
+	id := m.cm.Get(nodeID)
+	m.fs.AddRemote(id, files)
+	m.queueNeededBlocks()
 	m.fmut.Unlock()
 
 	if debugNet {
 		dlog.Printf("IDXUP(in): %s: %d files", nodeID, len(files))
+	}
+}
+
+func (m *Model) queueNeededBlocks() {
+	for _, f := range m.fs.Need(cid.LocalID) {
+		if !m.bq.contains(f.Name) {
+			gf := m.fs.GetGlobal(f.Name)
+			_, need := scanner.BlockDiff(f.Blocks, gf.Blocks)
+			l := len(need)
+			var offset int64
+			for i, b := range need {
+				m.bq.put(queuedBlock{
+					file:   f.Name,
+					offset: offset,
+					size:   b.Size,
+					last:   i == l-1,
+				})
+				offset += int64(b.Size)
+			}
+		}
 	}
 }
 
@@ -287,8 +307,6 @@ func (m *Model) Close(node string, err error) {
 	} else if err != io.EOF {
 		warnf("Connection to %s closed: %v", node, err)
 	}
-
-	m.fq.RemoveAvailable(node)
 
 	m.fmut.Lock()
 	cid := m.cm.Get(node)
