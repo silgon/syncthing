@@ -1,56 +1,66 @@
 package main
 
-import "sync"
+import "github.com/calmh/syncthing/scanner"
 
-type queuedBlock struct {
-	file   string
-	offset int64
-	size   uint32
-	last   bool
+type bqAdd struct {
+	file scanner.File
+	have []scanner.Block
+	need []scanner.Block
+}
+
+type bqBlock struct {
+	file  scanner.File
+	block scanner.Block   // get this block from the network
+	copy  []scanner.Block // copy these blocks from the old version of the file
 }
 
 type blockQueue struct {
-	blocks []queuedBlock
-	mutex  sync.Mutex
-	empty  *sync.Cond
+	inbox  chan bqAdd
+	outbox chan bqBlock
+
+	queued []bqBlock
 }
 
 func newBlockQueue() *blockQueue {
-	q := &blockQueue{}
-	q.empty = sync.NewCond(&q.mutex)
+	q := &blockQueue{
+		inbox:  make(chan bqAdd),
+		outbox: make(chan bqBlock),
+	}
+	go q.run()
 	return q
 }
 
-func (q *blockQueue) contains(f string) bool {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
+func (q *blockQueue) addBlock(a bqAdd) {
+	// First queue a copy operation
+	q.queued = append(q.queued, bqBlock{
+		file: a.file,
+		copy: a.have,
+	})
+	// Then queue the needed blocks individually
+	for _, b := range a.need {
+		q.queued = append(q.queued, bqBlock{
+			file:  a.file,
+			block: b,
+		})
+	}
+}
 
-	for _, b := range q.blocks {
-		if b.file == f {
-			return true
+func (q *blockQueue) run() {
+	for {
+		if len(q.queued) == 0 {
+			q.addBlock(<-q.inbox)
+		} else {
+			next := q.queued[0]
+			select {
+			case a := <-q.inbox:
+				q.addBlock(a)
+			case q.outbox <- next:
+				q.queued = q.queued[1:]
+			}
 		}
 	}
-	return false
 }
 
-func (q *blockQueue) put(b queuedBlock) {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	q.blocks = append(q.blocks, b)
-	q.empty.Signal()
-}
-
-func (q *blockQueue) get() queuedBlock {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	for len(q.blocks) == 0 {
-		q.empty.Wait()
-	}
-
-	b := q.blocks[0]
-	q.blocks = q.blocks[1:]
-
-	return b
+func (q *blockQueue) put(a bqAdd) {
+	q.inbox <- a
 }

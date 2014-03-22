@@ -2,34 +2,43 @@
 
 package main
 
-import "os"
+import (
+	"os"
+	"path"
 
-type reqRes struct {
+	"github.com/calmh/syncthing/buffers"
+)
+
+type requestResult struct {
 	node   string
 	repo   string
-	file   string
+	file   string // repo-relative name
+	path   string // full path name, fs-normalized
 	offset int64
 	data   []byte
 	err    error
 }
 
-type filestatus struct {
+type openFile struct {
+	path         string // full path name, fs-normalized
+	temp         string // temporary filename, full path, fs-normalized
+	availability uint64 // availability bitset
 	file         *os.File
-	err          error
-	outstanding  int  // number of requests we still have outstanding
-	done         bool // we have sent all requests for this file
-	availability uint64
-	temp         string // temporary filename
+	err          error // error when opening or writing to file, all following operations are cancelled
+	outstanding  int   // number of requests we still have outstanding
+	done         bool  // we have sent all requests for this file
 }
 
 const slots = 8
 
-var requestResults chan reqRes
-var files map[string]filestatus
+var requestResults chan requestResult
+var openFiles map[string]openFile
 var bq = newBlockQueue()
 var requestQueue = make(chan queuedBlock, slots)
-var requestSlots = make(chan bool, slots)
 var oustandingPerNode = make(map[string]int)
+
+var requestSlots = make(chan bool, slots)
+var blocks = make(chan bqBlock)
 
 func (m *Model) leastBusyNode(availability uint64) {
 	var low int = 2<<63 - 1
@@ -46,51 +55,94 @@ func (m *Model) leastBusyNode(availability uint64) {
 	return selected
 }
 
-func (m *Model) puller() {
+func (m *Model) puller(repo string, dir string) {
+	for i := 0; i < slots; i++ {
+		requestSlots <- true
+	}
+	go func() {
+		// fill blocks queue when there are free slots
+		for {
+			<-requestSlots
+			blocks <- <-bq.outbox
+		}
+	}()
+
+pull:
 	for {
 		select {
 		case res := <-requestResults:
 			oustandingPerNode[res.node]--
-			fs := files[res.file]
-			fs.file.WriteAt(res.data, res.offset)
-			fs.outstanding--
-			if fs.done && fs.outstanding == 0 {
-				fs.file.Close()
+			of, ok := openFiles[res.file]
+			if !ok || of.err != nil {
+				// no entry in openFiles means there was an error and we've cancelled the operation
+				continue
+			}
+			of.err = of.file.WriteAt(res.data, res.offset)
+			buffers.Put(res.data)
+			of.outstanding--
+			if of.done && of.outstanding == 0 {
+				of.file.Close()
+				delete(openFiles, res.file)
 				// Hash check the file and rename
 			}
 			requestSlots <- true
 
-		case b := <-requestQueue:
-			if fs, ok := files[b.Name]; !ok {
-				fs.temp = defTempNamer.TempName(b.Name)
-				fs.file, fs.err := os.Create(fs.temp)
-				// Open and copy file
-				fs.availability = m.fs.Availability(b.Name)
+		case b := <-blocks:
+			f := b.file
+
+			of, ok := openFiles[f.Name]
+			if !ok {
+				of.path = FSNormalize(path.Join(dir, f.Name))
+				of.temp = FSNormalize(path.Join(dir, defTempNamer.TempName(f.Name)))
+				of.availability = m.fs[repo].Availability(f.Name)
+				of.done = b.last
+
+				of.file, of.err = os.OpenFile(of.temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, osFileMode(f.Flags&0777))
+				if of.err != nil {
+					openFiles[f.Name] = of
+					continue pull
+				}
 			}
-			fs.outstanding++
-			fs.done = b.last
-			files[b.Name] = fs
 
-			// Select a peer
-			go func(node string, b queuedBlock) {
-				bs, err := m.protoConn[node].Request("default", b.name, b.offset, b.size)
-				requestResults <- reqRes{b.name, b.offset, bs, err}
-			}(node, b)
-		}
-	}
-}
+			if len(b.copy) > 0 {
+				// We have blocks to copy from the existing file
+				exfd, of.err = os.Open(of.path)
+				if of.err != nil {
+					of.file.Close()
+					openFiles[f.Name] = of
+					continue pull
+				}
 
-func (m *Model) filler() {
-	// Populate requestSlots with the number of requests we can process in parallel
-	for i := 0; i < slots; i++ {
-		requestSlots <- true
-	}
+				for _, b := range b.copy {
+					bs := buffers.Get(b.Size)
+					of.err = exfd.ReadAt(bs, b.Offset)
+					if of.err == nil {
+						of.err = of.file.WriteAt(bs, b.Offset)
+					}
+					buffers.Put(bs)
+					if of.err != nil {
+						exfd.Close()
+						of.file.Close()
+						openFiles[f.Name] = of
+						continue pull
+					}
+				}
 
-	for {
-		// Whenever there is a free slot, get a new block from the queue and put it on to the blockQueue.
-		select {
-		case <-requestSlots:
-			requestQueue <- bq.get()
+				exfd.Close()
+			}
+
+			if of.block.Size > 0 {
+				openFiles[b.Name].outstanding++
+				// TODO: Select a peer
+				go func(node string, b queuedBlock) {
+					bs, err := m.protoConn[node].Request("default", f.name, b.offset, b.size)
+					requestResults <- requestResult{b.name, b.offset, bs, err}
+					requestSlots <- true
+				}(node, b)
+			} else {
+				// nothing more to do
+				requestSlots <- true
+			}
 		}
 	}
 }
